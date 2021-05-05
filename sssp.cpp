@@ -123,6 +123,10 @@ void frontier_sssp(Real* dist, Int src) {
     
     while(true) {
         
+        #pragma omp parallel {
+            std::cout << "parallel" << std::endl;
+        }
+        
         for(unsigned int i = 0; i < counter_in; i++) {
             Int src = frontier_in[i];
             if(src == -1) continue;
