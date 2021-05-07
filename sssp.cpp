@@ -14,18 +14,13 @@
 using namespace std;
 using namespace std::chrono;
 
-#define VERBOSE
+// #define VERBOSE
 
 // --
 // Global defs
 
 typedef int Int;
 typedef float Real;
-
-// params
-Real alpha   = 0.85;
-Real tol     = 1e-6;
-Int max_iter = 1000;
 
 // graph
 Int n_rows, n_cols, n_nnz;
@@ -35,9 +30,6 @@ Real* data;
 
 Int n_nodes;
 Int n_edges;
-
-// output
-Real* x;
 
 // --
 // IO
@@ -56,7 +48,7 @@ void load_data(std::string inpath) {
 
     fread(indptr,  sizeof(Int),   n_rows + 1 , ptr);  // send directy to the memory since thats what the thing is.
     fread(indices, sizeof(Int),   n_nnz      , ptr);
-    fread(data,    sizeof(Real),     n_nnz      , ptr);
+    fread(data,    sizeof(Real),  n_nnz      , ptr);
 
 #ifdef VERBOSE
         printf("----------------------------\n");
@@ -103,68 +95,103 @@ void dijkstra_sssp(Real* dist, Int src) {
     }
 }
 
-void frontier_sssp(Real* dist, Int src) {
+void advance(Real* dist, bool* frontier_in, bool* frontier_out, Int start, Int end) {
+    for(Int src = start; src < end; src++) {
+        if(!frontier_in[src]) continue;
+        frontier_in[src] = false;
+        
+        for(int offset = indptr[src]; offset < indptr[src + 1]; offset++) {
+            Int dst       = indices[offset];
+            Real new_dist = dist[src] + data[offset];
+            
+            if(new_dist < dist[dst]) {
+                dist[dst]         = new_dist;              
+                frontier_out[dst] = true; // false sharing?
+            }
+        }
+    }
+}
+
+long long frontier_sssp(Real* dist, Int src, Int n_threads) {
+    bool* frontier_in  = (bool*)malloc(n_nodes * sizeof(bool));
+    bool* frontier_out = (bool*)malloc(n_nodes * sizeof(bool));
     
-    Int* visited      = (Int*)malloc(n_nodes * sizeof(Int));
-    Int* frontier_in  = (Int*)malloc(n_nodes * sizeof(Int));
-    Int* frontier_out = (Int*)malloc(n_nodes * sizeof(Int));
+    for(Int i = 0; i < n_nodes; i++)   dist[i]          = 999.0;
+    for(Int i = 0; i < n_nodes; i++)   frontier_in[i]   = false;
+    for(Int i = 0; i < n_nodes; i++)   frontier_out[i]  = false;
     
-    for(Int i = 0; i < n_nodes; i++) dist[i]         = 999.0;
-    for(Int i = 0; i < n_nodes; i++) visited[i]      = -1;
-    for(Int i = 0; i < n_nodes; i++) frontier_in[i]  = -1;
-    for(Int i = 0; i < n_nodes; i++) frontier_out[i] = -1;
+    dist[src]        = 0;
+    frontier_in[src] = true;
     
-    dist[src]      = 0;
-    frontier_in[0] = src;
-    
-    unsigned int counter_in  = 1;
-    unsigned int counter_out = 0;
     int iteration = 0;
     
-    while(true) {
-        
-        #pragma omp parallel {
-            std::cout << "parallel" << std::endl;
+    // Real* ldists = (Real*)malloc(n_nodes * n_threads * sizeof(Real));
+    // for(Int i = 0; i < n_nodes * n_threads; i++) {
+    //     ldists[i] = dist[i % n_nodes];
+    // }
+    
+    Int* starts    = (Int*)malloc(n_threads * sizeof(Int));
+    Int* ends      = (Int*)malloc(n_threads * sizeof(Int));
+    Int chunk_size = (n_nodes + n_threads - 1) / n_threads;
+    for(Int i = 0; i < n_threads; i++) {
+        starts[i] = i * chunk_size;
+        ends[i]   = (i + 1) * chunk_size;
+    }
+    ends[n_threads - 1] = n_nodes;
+
+    auto t = high_resolution_clock::now();
+    for(int it = 0; it < 5; it++) {
+
+        // Advance
+        #pragma omp parallel for num_threads(n_threads)
+        for(int tid = 0; tid < n_threads; tid++) {
+            advance(
+                // ldists + (tid * n_nodes),
+                dist,
+                frontier_in,
+                frontier_out,
+                starts[tid],
+                ends[tid]
+            );
         }
         
-        for(unsigned int i = 0; i < counter_in; i++) {
-            Int src = frontier_in[i];
-            if(src == -1) continue;
+        // #pragma omp parallel for num_threads(n_threads)
+        // for(Int i = 0; i < n_nodes; i++) {
+        //     if(!frontier_out[i]) continue;
             
-            for(int offset = indptr[src]; offset < indptr[src + 1]; offset++) {
-                Int dst       = indices[offset];
-                Real new_dist = dist[src] + data[offset];
-                if(new_dist < dist[dst]) {
-                    dist[dst] = new_dist;
-                    frontier_out[counter_out] = dst;
-                    counter_out++;
-                }
-            }
-        }   
-        
-        if(counter_out == 0) break;
-        
-        for(unsigned int i = 0; i < counter_out; i++) {
-            Int v = frontier_out[i];
-            if(visited[v] == iteration) {
-                visited[v] = -1;
-            }
-            visited[v] = iteration;
-        }
-        
-        Int* tmp     = frontier_in;
+        //     // Reduce
+        //     Real tmp = dist[i];
+        //     for(Int tid = 0; tid < n_threads; tid++) {
+        //         if(ldists[tid * n_nodes + i] < tmp)
+        //             tmp = ldists[tid * n_nodes + i];
+        //     }
+            
+        //     // Broadcast
+        //     for(Int tid = 0; tid < n_threads; tid++) {
+        //         ldists[tid * n_nodes + i] = tmp;
+        //     }
+            
+        //     dist[i] = tmp;
+        // }
+
+        bool* tmp    = frontier_in;
         frontier_in  = frontier_out;
         frontier_out = tmp;
-        
-        counter_in  = counter_out;
-        counter_out = 0;
-        
+                
         iteration++;
     }
+    auto elapsed = high_resolution_clock::now() - t;
+    return duration_cast<microseconds>(elapsed).count();
 }
 
 
 int main(int n_args, char** argument_array) {
+    int n_threads = 0;
+    #pragma omp parallel
+    {
+        n_threads = omp_get_num_threads();
+    }
+    
     // ---------------- INPUT ----------------
 
     load_data(argument_array[1]);
@@ -176,34 +203,32 @@ int main(int n_args, char** argument_array) {
     
     Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
     auto t1       = high_resolution_clock::now();
-    
     dijkstra_sssp(dijkstra_dist, src);
-    
     auto elapsed1 = high_resolution_clock::now() - t1;
     long long ms1 = duration_cast<microseconds>(elapsed1).count();
     
     // ---------------- FRONTIER ----------------
     
     Real* frontier_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    
-    auto t2       = high_resolution_clock::now();
-    
-    frontier_sssp(frontier_dist, src);
+    auto ms2 = frontier_sssp(frontier_dist, src, 1);
 
-    auto elapsed2 = high_resolution_clock::now() - t2;
-    long long ms2 = duration_cast<microseconds>(elapsed2).count();
+    Real* frontier_dist2 = (Real*)malloc(n_nodes * sizeof(Real));
+    auto ms3 = frontier_sssp(frontier_dist2, src, n_threads);
 
-    for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
-    std::cout << std::endl;
-    for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
-    std::cout << std::endl;
+    // for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
+    // std::cout << std::endl;
+    // for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
+    // std::cout << std::endl;
+    // for(Int i = 0; i < 40; i++) std::cout << frontier_dist2[i] << " ";
+    // std::cout << std::endl;
 
     int n_errors = 0;
     for(Int i = 0; i < n_nodes; i++) {
         if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
+        if(frontier_dist[i] != frontier_dist2[i]) n_errors++;
     }
     
-    std::cout << "ms1=" << ms1 << " | ms2=" << ms2 << " | n_errors=" << n_errors << std::endl;
+    std::cout << "ms1=" << ms1 << " | ms2=" << ms2 << " | ms3=" << ms3 << " | n_errors=" << n_errors << std::endl;
     
     return 0;
 }
