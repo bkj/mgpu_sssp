@@ -105,8 +105,8 @@ void advance(Real* dist, bool* frontier_in, bool* frontier_out, Int start, Int e
             Real new_dist = dist[src] + data[offset];
             
             if(new_dist < dist[dst]) {
-                dist[dst]         = new_dist;              
-                frontier_out[dst] = true; // false sharing?
+                dist[dst]         = new_dist; // false sharing? bad atomics?           
+                frontier_out[dst] = true;     // false sharing?
             }
         }
     }
@@ -125,10 +125,10 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
     
     int iteration = 0;
     
-    // Real* ldists = (Real*)malloc(n_nodes * n_threads * sizeof(Real));
-    // for(Int i = 0; i < n_nodes * n_threads; i++) {
-    //     ldists[i] = dist[i % n_nodes];
-    // }
+    Real* ldists = (Real*)malloc(n_nodes * n_threads * sizeof(Real));
+    for(Int i = 0; i < n_nodes * n_threads; i++) {
+        ldists[i] = dist[i % n_nodes];
+    }
     
     Int* starts    = (Int*)malloc(n_threads * sizeof(Int));
     Int* ends      = (Int*)malloc(n_threads * sizeof(Int));
@@ -215,17 +215,17 @@ int main(int n_args, char** argument_array) {
     Real* frontier_dist2 = (Real*)malloc(n_nodes * sizeof(Real));
     auto ms3 = frontier_sssp(frontier_dist2, src, n_threads);
 
-    // for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
-    // std::cout << std::endl;
-    // for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
-    // std::cout << std::endl;
-    // for(Int i = 0; i < 40; i++) std::cout << frontier_dist2[i] << " ";
-    // std::cout << std::endl;
+    for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
+    std::cout << std::endl;
+    for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
+    std::cout << std::endl;
+    for(Int i = 0; i < 40; i++) std::cout << frontier_dist2[i] << " ";
+    std::cout << std::endl;
 
     int n_errors = 0;
     for(Int i = 0; i < n_nodes; i++) {
         if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
-        if(frontier_dist[i] != frontier_dist2[i]) n_errors++;
+        if(dijkstra_dist[i] != frontier_dist2[i]) n_errors++;
     }
     
     std::cout << "ms1=" << ms1 << " | ms2=" << ms2 << " | ms3=" << ms3 << " | n_errors=" << n_errors << std::endl;
