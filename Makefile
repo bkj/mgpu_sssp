@@ -1,11 +1,12 @@
-CXXFLAGS += -std=c++11 -mtune=native -march=native -Wall -Wunused-result -O3 -DNDEBUG -g -fopenmp -ffast-math
+include Makefile.inc
 
-APP=sssp
+all: sssp cusssp
 
-all: $(APP)
+sssp: sssp.cpp
+	g++ $(CXXFLAGS) -o sssp sssp.cpp
 
-$(APP): $(APP).cpp
-	g++ $(CXXFLAGS) -o $(APP) $(APP).cpp
+cusssp : cusssp.cu
+	$(NVCC) -ccbin=${CXX} ${NVCCFLAGS} ${NVCCOPT} --compiler-options "${CXXFLAGS} ${CXXOPT}" -o cusssp cusssp.cu $(SOURCE) $(ARCH) $(INC)
 
 clean:
-	rm -f $(APP)
+	rm -f sssp cusssp
