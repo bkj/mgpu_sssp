@@ -25,6 +25,7 @@ using namespace std;
 using namespace std::chrono;
 
 // #define VERBOSE
+// #define NODE_BALANCED
 
 // --
 // Global defs
@@ -48,8 +49,7 @@ __device__ static float atomicMin(float* address, float value) {
   int expected;
   do {
     expected = old;
-    old = atomicCAS(addr_as_int, expected,
-                      __float_as_int(::fminf(value, __int_as_float(expected))));
+    old = atomicCAS(addr_as_int, expected, __float_as_int(::fminf(value, __int_as_float(expected))));
   } while (expected != old);
   return __int_as_float(old);
 }
@@ -102,13 +102,14 @@ class prioritize {
         }
 };
 
-void dijkstra_sssp(Real* dist, Int src) {
+long long dijkstra_sssp(Real* dist, Int src) {
     for(Int i = 0; i < n_nodes; i++) dist[i] = 999.0;
     dist[src] = 0;
 
+    auto t = high_resolution_clock::now();
     priority_queue<pair<Int,Real>, vector<pair<Int,Real>>, prioritize> pq;
     pq.push(make_pair(src, 0));
-
+    
     while(!pq.empty()) {
         pair<Int, Real> curr = pq.top();
         pq.pop();
@@ -126,23 +127,8 @@ void dijkstra_sssp(Real* dist, Int src) {
             }
         }
     }
-}
-
-void advance(Real* dist, bool* frontier_in, bool* frontier_out, Int start, Int end) {
-    for(Int src = start; src < end; src++) {
-        if(!frontier_in[src]) continue;
-        frontier_in[src] = false;
-        
-        for(int offset = indptr[src]; offset < indptr[src + 1]; offset++) {
-            Int dst       = indices[offset];
-            Real new_dist = dist[src] + data[offset];
-            
-            if(new_dist < dist[dst]) {
-                dist[dst]         = new_dist; // false sharing? bad atomics?           
-                frontier_out[dst] = true;     // false sharing?
-            }
-        }
-    }
+    auto elapsed = high_resolution_clock::now() - t;
+    return duration_cast<microseconds>(elapsed).count();
 }
 
 long long frontier_sssp(Real* dist, Int src, Int n_threads) {
@@ -204,32 +190,30 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
     auto t = high_resolution_clock::now();
     for(int it = 0; it < 5; it++) {
         
-        // <<
-        // auto node_op = [=] __device__(int const& src) -> bool {
-        //     if(!d_frontier_in[src]) return false;
+#ifdef NODE_BALANCED
+        auto node_op = [=] __device__(int const& src) -> bool {
+            if(!d_frontier_in[src]) return false;
             
-        //     for(int offset = d_indptr[src]; offset < d_indptr[src + 1]; offset++) {
-        //         Int dst       = d_indices[offset];
-        //         Real new_dist = d_dist[src] + d_data[offset];
+            for(int offset = d_indptr[src]; offset < d_indptr[src + 1]; offset++) {
+                Int dst       = d_indices[offset];
+                Real new_dist = d_dist[src] + d_data[offset];
                 
-        //         if(new_dist < d_dist[dst]) {
-        //             d_dist[dst]         = new_dist; // false sharing? bad atomics?           
-        //             d_frontier_out[dst] = true;     // false sharing?
-        //         }
-        //     }
-        //     return false;
-        // };
+                if(new_dist < d_dist[dst]) {
+                    d_dist[dst]         = new_dist; // false sharing? bad atomics?           
+                    d_frontier_out[dst] = true;     // false sharing?
+                }
+            }
+            return false;
+        };
         
-        // thrust::transform(
-        //     thrust::device,
-        //     thrust::make_counting_iterator<int>(0),
-        //     thrust::make_counting_iterator<int>(n_nodes),
-        //     thrust::make_discard_iterator(),
-        //     node_op
-        // );
-        
-        // --
-        
+        thrust::transform(
+            thrust::device,
+            thrust::make_counting_iterator<int>(0),
+            thrust::make_counting_iterator<int>(n_nodes),
+            thrust::make_discard_iterator(),
+            node_op
+        );
+#else   
         auto edge_op = [=] __device__(int const& offset) -> bool {
             Int src = d_rindices[offset];
             Int dst = d_indices[offset];
@@ -252,8 +236,7 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
             thrust::make_discard_iterator(),
             edge_op
         );
-        
-        // >>
+#endif
 
         thrust::fill_n(
             thrust::device,
@@ -287,10 +270,7 @@ int main(int n_args, char** argument_array) {
     // ---------------- DIJKSTRA ----------------
     
     Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto t1       = high_resolution_clock::now();
-    dijkstra_sssp(dijkstra_dist, src);
-    auto elapsed1 = high_resolution_clock::now() - t1;
-    long long ms1 = duration_cast<microseconds>(elapsed1).count();
+    auto ms1 = dijkstra_sssp(dijkstra_dist, src);
     
     // ---------------- FRONTIER ----------------
     
