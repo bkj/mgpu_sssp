@@ -42,6 +42,9 @@ Real* data;
 Int n_nodes;
 Int n_edges;
 
+// --
+// Helpers
+
 __device__ static float atomicMin(float* address, float value) {
   int* addr_as_int = reinterpret_cast<int*>(address);
   int old = *addr_as_int;
@@ -184,11 +187,15 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     my_timer.start();
     
     while(true) {
+        
+        // Advance
+        auto frontier_filter_op = [=] __device__(int const& offset) -> bool {
+            return d_frontier_in[d_rindices[offset]];
+        };
+        
         auto edge_op = [=] __device__(int const& offset) -> bool {
             Int src = d_rindices[offset];
             Int dst = d_indices[offset];
-            
-            if(!d_frontier_in[src]) return false;
             
             Real new_dist = d_dist[src] + d_data[offset];
             Real old_dist = atomicMin(d_dist + dst, new_dist);
@@ -197,31 +204,29 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
             
             return false;
         };
-
-        thrust::transform(
+        
+        thrust::transform_if(
             thrust::device,
             thrust::make_counting_iterator<int>(0),
             thrust::make_counting_iterator<int>(n_edges),
             thrust::make_discard_iterator(),
-            edge_op
+            edge_op,
+            frontier_filter_op
         );
 
+        // Swap input and output
         bool* tmp      = d_frontier_in;
         d_frontier_in  = d_frontier_out;
         d_frontier_out = tmp;
         
-        thrust::fill_n(
-            thrust::device,
-            d_frontier_out,
-            n_nodes,
-            false
+        // Reset output frontier
+        thrust::fill_n(thrust::device, 
+            d_frontier_out, n_nodes, false
         );
         
         // Convergence criterion
         auto keep_going = thrust::reduce(
-            thrust::device,
-            d_frontier_in + 0,
-            d_frontier_in + n_nodes
+            thrust::device, d_frontier_in + 0, d_frontier_in + n_nodes
         );
         if(keep_going == 0) break; 
         
