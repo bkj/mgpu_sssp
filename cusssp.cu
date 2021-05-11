@@ -236,21 +236,23 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
 
 int main(int n_args, char** argument_array) {
     
-    // ---------------- INPUT ----------------
+    // ---------------- INPUT ------------------------------
 
     load_data(argument_array[1]);
 
     int src = 0;
-    // ---------------- DIJKSTRA ----------------
+    // ---------------- CPU BASELINE -----------------------
     
     Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
     auto cpu_time = cpu_sssp(dijkstra_dist, src);
     
-    // ---------------- FRONTIER ----------------
+    // ---------------- GPU IMPLEMENTATION -----------------
     
     Real* frontier_dist = (Real*)malloc(n_nodes * sizeof(Real));
     auto gpu_time = cuda_sssp(frontier_dist, src, 1);
 
+    // ---------------- VALIDATION -------------------------
+    
     for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
     std::cout << std::endl;
     for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
