@@ -188,13 +188,11 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     
     while(true) {
         
-        // Advance
-        auto frontier_filter_op = [=] __device__(int const& offset) -> bool {
-            return d_frontier_in[d_rindices[offset]];
-        };
-        
-        auto edge_op = [=] __device__(int const& offset) -> bool {
+        // Advance        
+        auto edge_op = [=] __device__(int const& offset) -> void {
             Int src = d_rindices[offset];
+            if(!d_frontier_in[src]) return;
+            
             Int dst = d_indices[offset];
             
             Real new_dist = d_dist[src] + d_data[offset];
@@ -203,30 +201,28 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
                 d_frontier_out[dst] = true;
         };
         
-        thrust::transform_if(
+        thrust::for_each(
             thrust::device,
             thrust::make_counting_iterator<int>(0),
             thrust::make_counting_iterator<int>(n_edges),
-            thrust::make_discard_iterator(),
-            edge_op,
-            frontier_filter_op
+            edge_op
         );
 
         // Swap input and output
         bool* tmp      = d_frontier_in;
         d_frontier_in  = d_frontier_out;
         d_frontier_out = tmp;
-        
-        // Reset output frontier
-        thrust::fill_n(thrust::device, 
-            d_frontier_out, n_nodes, false
-        );
-        
+                
         // Convergence criterion
         auto keep_going = thrust::reduce(
             thrust::device, d_frontier_in + 0, d_frontier_in + n_nodes
         );
         if(keep_going == 0) break; 
+
+        // Reset output frontier
+        thrust::fill_n(thrust::device, 
+            d_frontier_out, n_nodes, false
+        );
         
         iteration++;
     }
