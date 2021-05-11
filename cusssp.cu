@@ -131,7 +131,7 @@ long long dijkstra_sssp(Real* dist, Int src) {
     return duration_cast<microseconds>(elapsed).count();
 }
 
-long long frontier_sssp(Real* dist, Int src, Int n_threads) {
+long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
     bool* frontier_in  = (bool*)malloc(n_nodes * sizeof(bool));
     bool* frontier_out = (bool*)malloc(n_nodes * sizeof(bool));
     
@@ -144,19 +144,46 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
     
     int iteration = 0;
     
-    Real* ldists = (Real*)malloc(n_nodes * n_threads * sizeof(Real));
-    for(Int i = 0; i < n_nodes * n_threads; i++) {
-        ldists[i] = dist[i % n_nodes];
-    }
-    
-    Int* starts    = (Int*)malloc(n_threads * sizeof(Int));
-    Int* ends      = (Int*)malloc(n_threads * sizeof(Int));
-    Int chunk_size = (n_nodes + n_threads - 1) / n_threads;
-    for(Int i = 0; i < n_threads; i++) {
+    // Create chunks
+    Int* starts    = (Int*)malloc(n_gpus * sizeof(Int));
+    Int* ends      = (Int*)malloc(n_gpus * sizeof(Int));
+    Int chunk_size = (n_edges + n_gpus - 1) / n_gpus;
+    for(Int i = 0; i < n_gpus; i++) {
         starts[i] = i * chunk_size;
         ends[i]   = (i + 1) * chunk_size;
     }
-    ends[n_threads - 1] = n_nodes;
+    ends[n_gpus - 1] = n_edges;
+
+    // Create GPUs
+    cudaSetDevice(0);
+    cudaStream_t master_stream;
+    cudaStreamCreateWithFlags(&master_stream, cudaStreamNonBlocking);
+
+    struct gpu_info {
+        cudaStream_t stream;
+        cudaEvent_t  event;
+    };
+    
+    std::vector<gpu_info> infos;
+    
+    for(int i = 0 ; i < n_gpus ; i++) {
+        gpu_info info;
+        cudaSetDevice(i);
+        cudaStreamCreateWithFlags(&info.stream, cudaStreamNonBlocking);
+        cudaEventCreate(&info.event);
+        infos.push_back(info);
+    }
+    
+    // Enable peer access
+    for(int i = 0; i < n_gpus; i++) {
+        cudaSetDevice(i);
+        for(int j = 0; j < n_gpus; j++) {
+            if(i == j) continue;
+            cudaDeviceEnablePeerAccess(j, 0);
+        }
+    }
+    
+    cudaSetDevice(0);
     
     // Data
     Int* d_indptr;
@@ -164,11 +191,18 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
     Int* d_rindices;
     Real* d_data;
 
-    cudaMalloc(&d_indptr,  (n_nodes + 1) * sizeof(Int));
-    cudaMalloc(&d_indices,  n_edges * sizeof(Int));
-    cudaMalloc(&d_rindices, n_edges * sizeof(Int));
-    cudaMalloc(&d_data,     n_edges * sizeof(Real));
+    cudaMallocManaged(&d_indptr,  (n_nodes + 1) * sizeof(Int));
+    cudaMallocManaged(&d_indices,  n_edges * sizeof(Int));
+    cudaMallocManaged(&d_rindices, n_edges * sizeof(Int));
+    cudaMallocManaged(&d_data,     n_edges * sizeof(Real));
 
+    for(int i = 0; i < n_gpus; i++) {
+        cudaMemAdvise(d_indptr,   (n_nodes + 1) * sizeof(Int), cudaMemAdviseSetReadMostly,  i);
+        cudaMemAdvise(d_indices,  n_edges       * sizeof(Int), cudaMemAdviseSetReadMostly,  i);
+        cudaMemAdvise(d_rindices, n_edges       * sizeof(Int), cudaMemAdviseSetReadMostly,  i);
+        cudaMemAdvise(d_data,     n_edges       * sizeof(Real), cudaMemAdviseSetReadMostly, i);
+    }
+    
     cudaMemcpy(d_indptr,   indptr,   (n_nodes + 1) * sizeof(Int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_indices,  indices,  n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
     cudaMemcpy(d_rindices, rindices, n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
@@ -214,30 +248,40 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
             node_op
         );
 #else   
-        auto edge_op = [=] __device__(int const& offset) -> bool {
-            Int src = d_rindices[offset];
-            Int dst = d_indices[offset];
-            
-            if(!d_frontier_in[src]) return false;
-            
-            Real new_dist = d_dist[src] + d_data[offset];
-            Real old_dist = atomicMin(d_dist + dst, new_dist);
-            if(new_dist < old_dist) {
-                d_frontier_out[dst] = true;
-            }
-            
-            return false;
-        };
 
-        thrust::transform(
-            thrust::device,
-            thrust::make_counting_iterator<int>(0),
-            thrust::make_counting_iterator<int>(n_edges),
-            thrust::make_discard_iterator(),
-            edge_op
-        );
+        #pragma omp parallel for num_threads(n_gpus)
+        for(int tid = 0; tid < n_gpus; tid++) {
+            auto edge_op = [=] __device__(int const& offset) -> bool {
+                Int src = d_rindices[offset];
+                Int dst = d_indices[offset];
+                
+                if(!d_frontier_in[src]) return false;
+                
+                Real new_dist = d_dist[src] + d_data[offset];
+                Real old_dist = atomicMin(d_dist + dst, new_dist);
+                if(new_dist < old_dist) {
+                    d_frontier_out[dst] = true;
+                }
+                
+                return false;
+            };
+
+            cudaSetDevice(tid);
+            thrust::transform(
+                thrust::cuda::par.on(infos[tid].stream),
+                thrust::make_counting_iterator<int>(starts[tid]),
+                thrust::make_counting_iterator<int>(ends[tid]),
+                thrust::make_discard_iterator(),
+                edge_op
+            );
+            cudaEventRecord(infos[tid].event, infos[tid].stream);
+        }
+        
+        for(int tid = 0; tid < n_gpus; tid++) {
+            cudaStreamWaitEvent(master_stream, infos[tid].event, 0);
+        }
 #endif
-
+        
         thrust::fill_n(
             thrust::device,
             d_frontier_in,
@@ -261,6 +305,8 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
 
 
 int main(int n_args, char** argument_array) {
+    int n_gpus = 1;
+    cudaGetDeviceCount(&n_gpus);
     
     // ---------------- INPUT ----------------
 
@@ -275,7 +321,9 @@ int main(int n_args, char** argument_array) {
     // ---------------- FRONTIER ----------------
     
     Real* frontier_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto ms2 = frontier_sssp(frontier_dist, src, 1);
+    long long ms2;
+    for(Int i = 0; i < 5; i++)
+        ms2 = frontier_sssp(frontier_dist, src, n_gpus);
 
     for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
     std::cout << std::endl;
