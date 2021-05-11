@@ -162,7 +162,7 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
     bool* frontier_in  = (bool*)malloc(n_nodes * sizeof(bool));
     bool* frontier_out = (bool*)malloc(n_nodes * sizeof(bool));
     
-    for(Int i = 0; i < n_nodes; i++) dist[i]          = 999.0;
+    for(Int i = 0; i < n_nodes; i++) dist[i]          = 99999.0;
     for(Int i = 0; i < n_nodes; i++) frontier_in[i]   = false;
     for(Int i = 0; i < n_nodes; i++) frontier_out[i]  = false;
     
@@ -191,7 +191,6 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
     my_timer.start();
     
     while(true) {
-
         auto edge_op = [=] __device__(int const& offset) -> bool {
             Int src = d_rindices[offset];
             Int dst = d_indices[offset];
