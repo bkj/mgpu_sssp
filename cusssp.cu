@@ -201,8 +201,6 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
             Real old_dist = atomicMin(d_dist + dst, new_dist);
             if(new_dist < old_dist)
                 d_frontier_out[dst] = true;
-            
-            return false;
         };
         
         thrust::transform_if(
