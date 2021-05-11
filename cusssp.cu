@@ -127,7 +127,7 @@ long long cpu_sssp(Real* dist, Int src) {
 long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     
     // --
-    // Data from host to device
+    // Copy graph from host to device
     
     Int* d_indptr;
     Int* d_indices;
@@ -145,7 +145,7 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     cudaMemcpy(d_data,     data,     n_edges * sizeof(Real),      cudaMemcpyHostToDevice);
     
     // --
-    // Setup problem
+    // Setup problem on host
     
     bool* frontier_in  = (bool*)malloc(n_nodes * sizeof(bool));
     bool* frontier_out = (bool*)malloc(n_nodes * sizeof(bool));
@@ -159,7 +159,9 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     
     int iteration = 0;
     
-    // Frontiers
+    // --
+    // Copy data to device
+    
     bool* d_frontier_in;
     bool* d_frontier_out;
     Real* d_dist;
@@ -172,6 +174,9 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     cudaMemcpy(d_frontier_out, frontier_out, n_nodes * sizeof(bool), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dist,         dist,         n_nodes * sizeof(Real), cudaMemcpyHostToDevice);
 
+    // --
+    // Run
+    
     cudaDeviceSynchronize();
     auto t = high_resolution_clock::now();
     
