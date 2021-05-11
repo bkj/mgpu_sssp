@@ -18,6 +18,7 @@
 #include <string.h>
 #include <omp.h>
 #include <queue>
+#include <limits>
 #include <vector>
 
 #include "timer.hxx"
@@ -93,10 +94,12 @@ class prioritize {
         }
 };
 
-void dijkstra_sssp(Real* dist, Int src) {
-    for(Int i = 0; i < n_nodes; i++) dist[i] = 999.0;
+long long cpu_sssp(Real* dist, Int src) {
+    for(Int i = 0; i < n_nodes; i++) dist[i] = std::numeric_limits<Real>::max();
     dist[src] = 0;
 
+    auto t = high_resolution_clock::now();
+    
     priority_queue<pair<Int,Real>, vector<pair<Int,Real>>, prioritize> pq;
     pq.push(make_pair(src, 0));
 
@@ -117,26 +120,11 @@ void dijkstra_sssp(Real* dist, Int src) {
             }
         }
     }
+    auto elapsed = high_resolution_clock::now() - t;
+    return duration_cast<microseconds>(elapsed).count();
 }
 
-void advance(Real* dist, bool* frontier_in, bool* frontier_out, Int start, Int end) {
-    for(Int src = start; src < end; src++) {
-        if(!frontier_in[src]) continue;
-        frontier_in[src] = false;
-        
-        for(int offset = indptr[src]; offset < indptr[src + 1]; offset++) {
-            Int dst       = indices[offset];
-            Real new_dist = dist[src] + data[offset];
-            
-            if(new_dist < dist[dst]) {
-                dist[dst]         = new_dist; // false sharing? bad atomics?           
-                frontier_out[dst] = true;     // false sharing?
-            }
-        }
-    }
-}
-
-long long frontier_sssp(Real* dist, Int src, Int n_threads) {
+long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     
     // --
     // Data from host to device
@@ -162,7 +150,7 @@ long long frontier_sssp(Real* dist, Int src, Int n_threads) {
     bool* frontier_in  = (bool*)malloc(n_nodes * sizeof(bool));
     bool* frontier_out = (bool*)malloc(n_nodes * sizeof(bool));
     
-    for(Int i = 0; i < n_nodes; i++) dist[i]          = 99999.0;
+    for(Int i = 0; i < n_nodes; i++) dist[i]          = std::numeric_limits<Real>::max();
     for(Int i = 0; i < n_nodes; i++) frontier_in[i]   = false;
     for(Int i = 0; i < n_nodes; i++) frontier_out[i]  = false;
     
@@ -256,15 +244,12 @@ int main(int n_args, char** argument_array) {
     // ---------------- DIJKSTRA ----------------
     
     Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto t1       = high_resolution_clock::now();
-    dijkstra_sssp(dijkstra_dist, src);
-    auto elapsed1 = high_resolution_clock::now() - t1;
-    long long ms1 = duration_cast<microseconds>(elapsed1).count();
+    auto cpu_time = cpu_sssp(dijkstra_dist, src);
     
     // ---------------- FRONTIER ----------------
     
     Real* frontier_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto ms2 = frontier_sssp(frontier_dist, src, 1);
+    auto gpu_time = cuda_sssp(frontier_dist, src, 1);
 
     for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
     std::cout << std::endl;
@@ -276,7 +261,7 @@ int main(int n_args, char** argument_array) {
         if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
     }
     
-    std::cout << "ms1=" << ms1 << " | ms2=" << ms2 << " | n_errors=" << n_errors << std::endl;
+    std::cout << "cpu_time=" << cpu_time << " | gpu_time=" << gpu_time << " | n_errors=" << n_errors << std::endl;
     
     return 0;
 }
