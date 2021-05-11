@@ -33,14 +33,11 @@ typedef int Int;
 typedef float Real;
 
 // graph
-Int n_rows, n_cols, n_nnz;
+Int n_nodes, n_edges;
 Int* indptr;
 Int* rindices;
-Int* indices;
+Int* cindices;
 Real* data;
-
-Int n_nodes;
-Int n_edges;
 
 // --
 // Helpers
@@ -64,22 +61,19 @@ void load_data(std::string inpath) {
     FILE *ptr;
     ptr = fopen(inpath.c_str(), "rb");
 
-    fread(&n_rows,   sizeof(Int), 1, ptr);
-    fread(&n_cols,   sizeof(Int), 1, ptr);
-    fread(&n_nnz,    sizeof(Int), 1, ptr);
+    fread(&n_nodes,   sizeof(Int), 1, ptr);
+    fread(&n_nodes,   sizeof(Int), 1, ptr);
+    fread(&n_edges,    sizeof(Int), 1, ptr);
 
-    indptr   = (Int*)  malloc(sizeof(Int)  * (n_rows + 1)  );
-    indices  = (Int*)  malloc(sizeof(Int)  * n_nnz         );
-    data     = (Real*) malloc(sizeof(Real) * n_nnz         );
+    indptr   = (Int*)  malloc(sizeof(Int)  * (n_nodes + 1)  );
+    cindices = (Int*)  malloc(sizeof(Int)  * n_edges         );
+    rindices = (Int*)  malloc(sizeof(Int)  * n_edges         );
+    data     = (Real*) malloc(sizeof(Real) * n_edges         );
 
-    fread(indptr,  sizeof(Int),   n_rows + 1 , ptr);  // send directy to the memory since thats what the thing is.
-    fread(indices, sizeof(Int),   n_nnz      , ptr);
-    fread(data,    sizeof(Real),  n_nnz      , ptr);
-
-    n_nodes = n_rows;
-    n_edges = n_nnz;
+    fread(indptr,   sizeof(Int),   n_nodes + 1 , ptr);  // send directy to the memory since thats what the thing is.
+    fread(cindices, sizeof(Int),   n_edges     , ptr);
+    fread(data,     sizeof(Real),  n_edges     , ptr);
     
-    rindices = (Int*) malloc(sizeof(Int) * n_nnz);
     for(Int src = 0; src < n_nodes; src++) {
         for(Int offset = indptr[src]; offset < indptr[src + 1]; offset++) {
             rindices[offset] = src;
@@ -114,7 +108,7 @@ long long cpu_sssp(Real* dist, Int src) {
         Real curr_dist = curr.second;
         if(curr_dist == dist[curr_node]) {
             for(Int offset = indptr[curr_node]; offset < indptr[curr_node + 1]; offset++) {
-                Int neib      = indices[offset];
+                Int neib      = cindices[offset];
                 Real new_dist = curr_dist + data[offset];
                 if(new_dist < dist[neib]) {
                     dist[neib] = new_dist;
@@ -132,20 +126,17 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     // --
     // Copy graph from host to device
     
-    Int* d_indptr;
-    Int* d_indices;
+    Int* d_cindices;
     Int* d_rindices;
     Real* d_data;
 
-    cudaMalloc(&d_indptr,  (n_nodes + 1) * sizeof(Int));
-    cudaMalloc(&d_indices,  n_edges * sizeof(Int));
-    cudaMalloc(&d_rindices, n_edges * sizeof(Int));
-    cudaMalloc(&d_data,     n_edges * sizeof(Real));
+    cudaMalloc(&d_cindices,  n_edges * sizeof(Int));
+    cudaMalloc(&d_rindices,  n_edges * sizeof(Int));
+    cudaMalloc(&d_data,      n_edges * sizeof(Real));
 
-    cudaMemcpy(d_indptr,   indptr,   (n_nodes + 1) * sizeof(Int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_indices,  indices,  n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
-    cudaMemcpy(d_rindices, rindices, n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
-    cudaMemcpy(d_data,     data,     n_edges * sizeof(Real),      cudaMemcpyHostToDevice);
+    cudaMemcpy(d_cindices,  cindices,  n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
+    cudaMemcpy(d_rindices,  rindices,  n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
+    cudaMemcpy(d_data,      data,      n_edges * sizeof(Real),      cudaMemcpyHostToDevice);
     
     // --
     // Setup problem on host
@@ -163,7 +154,7 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     int iteration = 0;
     
     // --
-    // Copy data to device
+    // Copy problem to device
     
     bool* d_frontier_in;
     bool* d_frontier_out;
@@ -185,24 +176,23 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     
     cuda_timer_t my_timer;
     my_timer.start();
+
+    // Advance
+    auto frontier_filter_op = [=] __device__(int const& offset) -> bool {
+        return d_frontier_in[d_rindices[offset]];
+    };
+    
+    auto edge_op = [=] __device__(int const& offset) -> bool {
+        Int src = d_rindices[offset];
+        Int dst = d_cindices[offset];
+        
+        Real new_dist = d_dist[src] + d_data[offset];
+        Real old_dist = atomicMin(d_dist + dst, new_dist);
+        if(new_dist < old_dist)
+            d_frontier_out[dst] = true;
+    };
     
     while(true) {
-        
-        // Advance
-        auto frontier_filter_op = [=] __device__(int const& offset) -> bool {
-            return d_frontier_in[d_rindices[offset]];
-        };
-        
-        auto edge_op = [=] __device__(int const& offset) -> bool {
-            Int src = d_rindices[offset];
-            Int dst = d_indices[offset];
-            
-            Real new_dist = d_dist[src] + d_data[offset];
-            Real old_dist = atomicMin(d_dist + dst, new_dist);
-            if(new_dist < old_dist)
-                d_frontier_out[dst] = true;
-        };
-        
         thrust::transform_if(
             thrust::device,
             thrust::make_counting_iterator<int>(0),
