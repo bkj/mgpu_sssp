@@ -177,22 +177,9 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
     for(Int i = 0; i < n_nodes; i++) h_frontier_in[i]   = -1;
     for(Int i = 0; i < n_nodes; i++) h_frontier_out[i]  = -1;
     
-    h_dist[src]        = 0;
-    h_frontier_in[src] = 0;
-    
-    // Global frontier + dist
-    char* g_frontier_in;
-    char* g_frontier_out;
-    Real* g_dist;
-    
-    cudaMalloc(&g_frontier_in,  n_nodes * sizeof(char));
-    cudaMalloc(&g_frontier_out, n_nodes * sizeof(char));
-    cudaMalloc(&g_dist,         n_nodes * sizeof(Real));
-
-    cudaMemcpy(g_frontier_in,  h_frontier_in,  n_nodes * sizeof(char),  cudaMemcpyHostToDevice);
-    cudaMemcpy(g_frontier_out, h_frontier_out, n_nodes * sizeof(char),  cudaMemcpyHostToDevice);
-    cudaMemcpy(g_dist,         h_dist,         n_nodes * sizeof(Real),  cudaMemcpyHostToDevice);
-    
+    h_dist[src]         = 0;
+    h_frontier_in[src]  = 0;
+        
     // Local data, frontier + dist
     Int* all_cindices[n_gpus];
     Int* all_rindices[n_gpus];
@@ -263,8 +250,8 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
         // Merge
         ncclGroupStart();
         for (int i = 0; i < n_gpus; i++) {
-            ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream);
-            ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar, ncclMax,  comms[i], infos[i].stream);
+            ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream); // min-reduce distance
+            ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar, ncclMax,  comms[i], infos[i].stream); // swap frontiers
         }
         ncclGroupEnd();
 
@@ -274,6 +261,16 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
         
         iter++;
     }
+    
+    // Merge
+    ncclGroupStart();
+    for (int i = 0; i < n_gpus; i++)
+        ncclReduce((const void*)all_dist[i], (void*)all_dist[i], n_nodes, ncclFloat, ncclMin, 0, comms[i], infos[i].stream);
+    ncclGroupEnd();
+
+    for(int gid = 0; gid < n_gpus; gid++)
+        cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
+    cudaStreamSynchronize(master_stream);
     
     cudaSetDevice(0);
     cudaMemcpy(h_dist, all_dist[0], n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
@@ -297,7 +294,7 @@ int main(int n_args, char** argument_array) {
     
     Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
     long long ms1 = 0;
-    // ms1 = sssp_cpu(dijkstra_dist, src);
+    ms1 = sssp_cpu(dijkstra_dist, src);
     
     // ---------------- FRONTIER ----------------
     
@@ -305,15 +302,15 @@ int main(int n_args, char** argument_array) {
     long long ms2 = 0;
     ms2 = sssp_mgpu(frontier_dist, src, n_gpus);
 
-    // for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
-    // std::cout << std::endl;
+    for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
+    std::cout << std::endl;
     for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
     std::cout << std::endl;
 
     int n_errors = 0;
-    // for(Int i = 0; i < n_nodes; i++) {
-    //     if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
-    // }
+    for(Int i = 0; i < n_nodes; i++) {
+        if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
+    }
     
     std::cout << "ms1=" << ms1 << " | ms2=" << ms2 << " | n_errors=" << n_errors << std::endl;
     
