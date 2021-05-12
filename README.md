@@ -17,6 +17,15 @@ rmat24    | 2     | 143.859
 rmat24    | 3     | 113.369
 rmat24    | 4     |  97.710
 
+## MGPU+NCCL (EC2 V100)
+
+| dataset | n_gpu | time (ms) |
+| ------- | ----- | --------- |
+rmat24    | 1     | 238.055
+rmat24    | 2     | 140.895
+rmat24    | 3     |  96.296
+rmat24    | 4     |  72.972
+
 ## essentials results (EC2 V100)
 
 | dataset | n_gpu | time (ms) |
