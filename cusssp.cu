@@ -33,14 +33,13 @@ typedef int Int;
 typedef float Real;
 
 // graph
-Int n_rows, n_cols, n_nnz;
+Int n_nodes, n_edges;
 Int* indptr;
 Int* rindices;
-Int* indices;
+Int* cindices;
 Real* data;
 
-Int n_nodes;
-Int n_edges;
+int src = 0;
 
 // --
 // Helpers
@@ -64,22 +63,19 @@ void load_data(std::string inpath) {
     FILE *ptr;
     ptr = fopen(inpath.c_str(), "rb");
 
-    fread(&n_rows,   sizeof(Int), 1, ptr);
-    fread(&n_cols,   sizeof(Int), 1, ptr);
-    fread(&n_nnz,    sizeof(Int), 1, ptr);
+    fread(&n_nodes,   sizeof(Int), 1, ptr);
+    fread(&n_nodes,   sizeof(Int), 1, ptr);
+    fread(&n_edges,   sizeof(Int), 1, ptr);
 
-    indptr   = (Int*)  malloc(sizeof(Int)  * (n_rows + 1)  );
-    indices  = (Int*)  malloc(sizeof(Int)  * n_nnz         );
-    data     = (Real*) malloc(sizeof(Real) * n_nnz         );
+    indptr    = (Int*)  malloc(sizeof(Int)  * (n_nodes + 1)  );
+    cindices  = (Int*)  malloc(sizeof(Int)  * n_edges        );
+    rindices  = (Int*)  malloc(sizeof(Int)  * n_edges        );
+    data      = (Real*) malloc(sizeof(Real) * n_edges        );
 
-    fread(indptr,  sizeof(Int),   n_rows + 1 , ptr);  // send directy to the memory since thats what the thing is.
-    fread(indices, sizeof(Int),   n_nnz      , ptr);
-    fread(data,    sizeof(Real),  n_nnz      , ptr);
-
-    n_nodes = n_rows;
-    n_edges = n_nnz;
+    fread(indptr,  sizeof(Int),   n_nodes + 1 , ptr);  // send directy to the memory since thats what the thing is.
+    fread(cindices, sizeof(Int),  n_edges     , ptr);
+    fread(data,    sizeof(Real),  n_edges     , ptr);
     
-    rindices = (Int*) malloc(sizeof(Int) * n_nnz);
     for(Int src = 0; src < n_nodes; src++) {
         for(Int offset = indptr[src]; offset < indptr[src + 1]; offset++) {
             rindices[offset] = src;
@@ -114,7 +110,7 @@ long long cpu_sssp(Real* dist, Int src) {
         Real curr_dist = curr.second;
         if(curr_dist == dist[curr_node]) {
             for(Int offset = indptr[curr_node]; offset < indptr[curr_node + 1]; offset++) {
-                Int neib      = indices[offset];
+                Int neib      = cindices[offset];
                 Real new_dist = curr_dist + data[offset];
                 if(new_dist < dist[neib]) {
                     dist[neib] = new_dist;
@@ -132,20 +128,17 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     // --
     // Copy graph from host to device
     
-    Int* d_indptr;
-    Int* d_indices;
+    Int* d_cindices;
     Int* d_rindices;
     Real* d_data;
 
-    cudaMalloc(&d_indptr,  (n_nodes + 1) * sizeof(Int));
-    cudaMalloc(&d_indices,  n_edges * sizeof(Int));
-    cudaMalloc(&d_rindices, n_edges * sizeof(Int));
-    cudaMalloc(&d_data,     n_edges * sizeof(Real));
+    cudaMalloc(&d_cindices,  n_edges       * sizeof(Int));
+    cudaMalloc(&d_rindices,  n_edges       * sizeof(Int));
+    cudaMalloc(&d_data,      n_edges       * sizeof(Real));
 
-    cudaMemcpy(d_indptr,   indptr,   (n_nodes + 1) * sizeof(Int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_indices,  indices,  n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
-    cudaMemcpy(d_rindices, rindices, n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
-    cudaMemcpy(d_data,     data,     n_edges * sizeof(Real),      cudaMemcpyHostToDevice);
+    cudaMemcpy(d_cindices, cindices,  n_edges       * sizeof(Int),  cudaMemcpyHostToDevice);
+    cudaMemcpy(d_rindices, rindices,  n_edges       * sizeof(Int),  cudaMemcpyHostToDevice);
+    cudaMemcpy(d_data,     data,      n_edges       * sizeof(Real), cudaMemcpyHostToDevice);
     
     // --
     // Setup problem on host
@@ -183,9 +176,6 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     cudaDeviceSynchronize();
     auto t = high_resolution_clock::now();
     
-    cuda_timer_t my_timer;
-    my_timer.start();
-    
     while(true) {
         
         // Advance        
@@ -193,7 +183,7 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
             Int src = d_rindices[offset];
             if(!d_frontier_in[src]) return;
             
-            Int dst = d_indices[offset];
+            Int dst = d_cindices[offset];
             
             Real new_dist = d_dist[src] + d_data[offset];
             Real old_dist = atomicMin(d_dist + dst, new_dist);
@@ -230,9 +220,6 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     cudaMemcpy(dist, d_dist, n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     
-    float ms = my_timer.end();
-    std::cout << "cuda ms: " << ms << std::endl; 
-    
     auto elapsed = high_resolution_clock::now() - t;
     return duration_cast<microseconds>(elapsed).count();
 }
@@ -243,28 +230,28 @@ int main(int n_args, char** argument_array) {
     // ---------------- INPUT ------------------------------
 
     load_data(argument_array[1]);
-
-    int src = 0;
+    
     // ---------------- CPU BASELINE -----------------------
     
-    Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto cpu_time = cpu_sssp(dijkstra_dist, src);
+    Real* cpu_dist = (Real*)malloc(n_nodes * sizeof(Real));
+    auto cpu_time  = cpu_sssp(cpu_dist, src);
     
     // ---------------- GPU IMPLEMENTATION -----------------
     
-    Real* frontier_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto gpu_time = cuda_sssp(frontier_dist, src, 1);
+    Real* gpu_dist = (Real*)malloc(n_nodes * sizeof(Real));
+    auto gpu_time  = cuda_sssp(gpu_dist, src, 1);
 
     // ---------------- VALIDATION -------------------------
     
-    for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
+    for(Int i = 0; i < 40; i++) std::cout << cpu_dist[i] << " ";
     std::cout << std::endl;
-    for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
+    
+    for(Int i = 0; i < 40; i++) std::cout << gpu_dist[i] << " ";
     std::cout << std::endl;
 
     int n_errors = 0;
     for(Int i = 0; i < n_nodes; i++) {
-        if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
+        if(cpu_dist[i] != gpu_dist[i]) n_errors++;
     }
     
     std::cout << "cpu_time=" << cpu_time << " | gpu_time=" << gpu_time << " | n_errors=" << n_errors << std::endl;
