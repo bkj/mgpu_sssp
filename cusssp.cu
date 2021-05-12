@@ -186,24 +186,41 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
     Int* g_cindices[n_gpus];
     Int* g_rindices[n_gpus];
     Real* g_data[n_gpus];
+    Int* g_frontier_in[n_gpus];
+    Int* g_frontier_out[n_gpus];
+    Real* g_dist[n_gpus];
+    
     for(int gid = 0; gid < n_gpus; gid++) {
         cudaSetDevice(gid);
         
         Int* d_cindices;
         Int* d_rindices;
         Real* d_data;
+        Int* d_frontier_in;
+        Int* d_frontier_out;
+        Real* d_dist;
 
-        cudaMalloc(&d_cindices, n_edges * sizeof(Int));
-        cudaMalloc(&d_rindices, n_edges * sizeof(Int));
-        cudaMalloc(&d_data,     n_edges * sizeof(Real));
+        cudaMalloc(&d_cindices,     n_edges * sizeof(Int));
+        cudaMalloc(&d_rindices,     n_edges * sizeof(Int));
+        cudaMalloc(&d_data,         n_edges * sizeof(Real));
+        cudaMalloc(&d_frontier_in,  n_nodes * sizeof(Int));
+        cudaMalloc(&d_frontier_out, n_nodes * sizeof(Int));
+        cudaMalloc(&d_dist,         n_nodes * sizeof(Real));
         
         cudaMemcpy(d_cindices, cindices,  n_edges * sizeof(Int),      cudaMemcpyHostToDevice);
-        cudaMemcpy(d_rindices, rindices, n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
-        cudaMemcpy(d_data,     data,     n_edges * sizeof(Real),      cudaMemcpyHostToDevice);
-        
-        g_cindices[gid] = d_cindices;
-        g_rindices[gid] = d_rindices;
-        g_data[gid]     = d_data;
+        cudaMemcpy(d_rindices, rindices,  n_edges * sizeof(Int),       cudaMemcpyHostToDevice);
+        cudaMemcpy(d_data,     data,      n_edges * sizeof(Real),      cudaMemcpyHostToDevice);
+
+        cudaMemcpy(d_frontier_in,  frontier_in,  n_nodes * sizeof(Int),  cudaMemcpyHostToDevice);
+        cudaMemcpy(d_frontier_out, frontier_out, n_nodes * sizeof(Int),  cudaMemcpyHostToDevice);
+        cudaMemcpy(d_dist,         dist,         n_nodes * sizeof(Real), cudaMemcpyHostToDevice);
+
+        g_cindices[gid]    = d_cindices;
+        g_rindices[gid]    = d_rindices;
+        g_data[gid]        = d_data;
+        g_frontier_in[gid] = d_frontier_in;
+        g_frontier_out[gid] = d_frontier_out;
+        g_dist[gid]        = d_dist;
     }
     
     cudaSetDevice(0);
@@ -217,8 +234,8 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
     cudaMalloc(&d_frontier_out, n_nodes * sizeof(Int));
     cudaMalloc(&d_dist,         n_nodes * sizeof(Real));
 
-    cudaMemcpy(d_frontier_in,  frontier_in,  n_nodes * sizeof(Int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_frontier_out, frontier_out, n_nodes * sizeof(Int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_frontier_in,  frontier_in,  n_nodes * sizeof(Int),  cudaMemcpyHostToDevice);
+    cudaMemcpy(d_frontier_out, frontier_out, n_nodes * sizeof(Int),  cudaMemcpyHostToDevice);
     cudaMemcpy(d_dist,         dist,         n_nodes * sizeof(Real), cudaMemcpyHostToDevice);
 
     for(int i = 0 ; i < n_gpus ; i++) cudaDeviceSynchronize();
@@ -228,39 +245,87 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
         
         Int iteration1 = iteration + 1;
         
+        // --
+        // ADVANCE
+        
+        nvtxRangePushA("advance");
         #pragma omp parallel for num_threads(n_gpus)
-        for(int tid = 0; tid < n_gpus; tid++) {
-            cudaSetDevice(tid);
+        for(int gid = 0; gid < n_gpus; gid++) {
+            cudaSetDevice(gid);
             
-            Int* d_cindices = g_cindices[tid];
-            Int* d_rindices = g_rindices[tid];
-            Real* d_data    = g_data[tid];
-
+            Int* d_cindices     = g_cindices[gid];
+            Int* d_rindices     = g_rindices[gid];
+            Real* d_data        = g_data[gid];
+            Int* l_frontier_in  = g_frontier_in[gid];
+            Int* l_frontier_out = g_frontier_out[gid];
+            Real* l_dist        = g_dist[gid];
+            
+            cudaMemcpyAsync(l_frontier_in,  d_frontier_in,  n_nodes * sizeof(Int), cudaMemcpyDeviceToDevice, infos[gid].stream);
+            cudaMemcpyAsync(l_frontier_out, d_frontier_out, n_nodes * sizeof(Int), cudaMemcpyDeviceToDevice, infos[gid].stream);
+            cudaMemcpyAsync(l_dist,         d_dist,         n_nodes * sizeof(Real), cudaMemcpyDeviceToDevice, infos[gid].stream);
+                        
             auto edge_op = [=] __device__(int const& offset) -> void {
-                Int src = d_rindices[offset];
-                if(d_frontier_in[src] != iteration) return;
+                Int src = d_rindices[offset];               // local
+                if(l_frontier_in[src] != iteration) return; // local
                 
-                Int dst = d_cindices[offset];
+                Int dst = d_cindices[offset]; // local
                 
-                Real new_dist = d_dist[src] + d_data[offset];
-                Real old_dist = atomicMin(d_dist + dst, new_dist);
+                Real new_dist = l_dist[src] + d_data[offset];      // (global, local)
+                Real old_dist = atomicMin(l_dist + dst, new_dist); // (global write)
                 if(new_dist < old_dist)
-                    d_frontier_out[dst] = iteration1;
+                    l_frontier_out[dst] = iteration1; // global
             };
             
             thrust::for_each(
-                thrust::cuda::par.on(infos[tid].stream),
-                thrust::make_counting_iterator<Int>(starts[tid]),
-                thrust::make_counting_iterator<Int>(ends[tid]),
+                thrust::cuda::par.on(infos[gid].stream),
+                thrust::make_counting_iterator<Int>(starts[gid]),
+                thrust::make_counting_iterator<Int>(ends[gid]),
                 edge_op
             );
-            cudaEventRecord(infos[tid].event, infos[tid].stream);
+            
+            cudaEventRecord(infos[gid].event, infos[gid].stream);
         }
         
-        for(int tid = 0; tid < n_gpus; tid++)
-            cudaStreamWaitEvent(master_stream, infos[tid].event, 0);
+        for(int gid = 0; gid < n_gpus; gid++)
+            cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
         cudaStreamSynchronize(master_stream);
-
+        nvtxRangePop();
+        
+        // ------
+        // MERGE
+        
+        nvtxRangePushA("merge");
+        #pragma omp parallel for num_threads(n_gpus)
+        for(int gid = 0; gid < n_gpus; gid++) {
+            cudaSetDevice(gid);
+            
+            Int* d_cindices     = g_cindices[gid];
+            Real* l_dist        = g_dist[gid];
+            Int* l_frontier_out = g_frontier_out[gid];
+                        
+            auto merge_op = [=] __device__(int const& offset) -> void {
+                Int dst = d_cindices[offset];                 // local
+                if(l_frontier_out[dst] != iteration1) return; // local
+                d_frontier_out[dst] = iteration1;
+                l_frontier_out[dst] = 0;
+                atomicMin(d_dist + dst, l_dist[dst]);
+            };
+            
+            thrust::for_each(
+                thrust::cuda::par.on(infos[gid].stream),
+                thrust::make_counting_iterator<Int>(starts[gid]),
+                thrust::make_counting_iterator<Int>(ends[gid]),
+                merge_op
+            );
+            
+            cudaEventRecord(infos[gid].event, infos[gid].stream);
+        }
+        
+        for(int gid = 0; gid < n_gpus; gid++)
+            cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
+        cudaStreamSynchronize(master_stream);
+        nvtxRangePop();
+        
         Int* tmp       = d_frontier_in;
         d_frontier_in  = d_frontier_out;
         d_frontier_out = tmp;
