@@ -2,18 +2,19 @@
 
 # run.sh
 
-PROB=rmat20.bin
+PROB=rmat24.bin
 
 # --
 # Build
 
 make clean
-make cusssp
+make cusssp -j4
 
 # --
 # Run
 
-CUDA_VISIBLE_DEVICES=0        ./cusssp $PROB
-CUDA_VISIBLE_DEVICES=0,1      ./cusssp $PROB
-CUDA_VISIBLE_DEVICES=0,1,2    ./cusssp $PROB
-CUDA_VISIBLE_DEVICES=0,1,2,3  ./cusssp $PROB
+CUDA_VISIBLE_DEVICES=0        ./cusssp data/$PROB
+CUDA_VISIBLE_DEVICES=0,1      ./cusssp data/$PROB
+CUDA_VISIBLE_DEVICES=0,1,2    ./cusssp data/$PROB
+CUDA_VISIBLE_DEVICES=0,1,2,3  ./cusssp data/$PROB
+

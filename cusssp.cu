@@ -1,6 +1,7 @@
 #pragma GCC diagnostic ignored "-Wunused-result"
 
 #include "thrust/device_vector.h"
+#include "nccl.h"
 
 #include <chrono>
 #include <queue>
@@ -209,122 +210,73 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
 
     int iter = 0;
     
+    ncclComm_t comms[n_gpus];
+    int devs[n_gpus];
+    for(int i = 0; i < n_gpus; i++) devs[i] = i;
+    ncclCommInitAll(comms, n_gpus, devs);
+    
     auto t = high_resolution_clock::now();
     while(iter <= 7) { // hardcode number of iterations -- skipping convergence criterionfor now
         
         Int next_iter = iter + 1;
         
-        if(iter >= 3 && iter <= 5) {
+        // Advance
+        #pragma omp parallel for num_threads(n_gpus)
+        for(int gid = 0; gid < n_gpus; gid++) {
             
-            // Broadcast data to workers
-            // Could do this better -- shaped like tree instead of start
-            #pragma omp parallel for num_threads(n_gpus)
-            for(int gid = 0; gid < n_gpus; gid++) {
-                cudaSetDevice(gid);
-                cudaMemcpyAsync(all_frontier_in[gid],  g_frontier_in,  n_nodes * sizeof(char), cudaMemcpyDeviceToDevice, infos[gid].stream);
-                cudaMemcpyAsync(all_dist[gid],         g_dist,         n_nodes * sizeof(Real), cudaMemcpyDeviceToDevice, infos[gid].stream);
-                cudaEventRecord(infos[gid].event, infos[gid].stream);
-            }
-            for(int gid = 0; gid < n_gpus; gid++)
-                cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
-            cudaStreamSynchronize(master_stream);
+            cudaSetDevice(gid);
+            
+            Int* l_cindices      = all_cindices[gid];
+            Int* l_rindices      = all_rindices[gid];
+            Real* l_data         = all_data[gid];
+            char* l_frontier_in  = all_frontier_in[gid];
+            char* l_frontier_out = all_frontier_out[gid];
+            Real* l_dist         = all_dist[gid];
             
             // Advance
-            #pragma omp parallel for num_threads(n_gpus)
-            for(int gid = 0; gid < n_gpus; gid++) {
-                
-                cudaSetDevice(gid);
-                
-                Int* l_cindices      = all_cindices[gid];
-                Int* l_rindices      = all_rindices[gid];
-                Real* l_data         = all_data[gid];
-                char* l_frontier_in  = all_frontier_in[gid];
-                char* l_frontier_out = all_frontier_out[gid];
-                Real* l_dist         = all_dist[gid];
-                
-                // Advance
-                auto edge_op = [=] __device__(int const& offset) -> void {
-                    Int src = l_rindices[offset];
-                    Int dst = l_cindices[offset];
-                    
-                    if(l_frontier_in[src] != iter) return;
-                    
-                    Real new_dist = l_dist[src] + l_data[offset];     
-                    Real old_dist = atomicMin(l_dist + dst, new_dist);
-                    if(new_dist < old_dist)
-                        l_frontier_out[dst] = next_iter;
-                };
-                
-                thrust::for_each(
-                    thrust::cuda::par.on(infos[gid].stream),
-                    thrust::make_counting_iterator<Int>(starts[gid]),
-                    thrust::make_counting_iterator<Int>(ends[gid]),
-                    edge_op
-                );
-                
-                // Merge
-                auto merge_op = [=] __device__(int const& dst) -> void {
-                    if(l_frontier_out[dst] != next_iter) return;
-                    if(g_frontier_out[dst] != next_iter) g_frontier_out[dst] = next_iter;
-                    atomicMin(g_dist + dst, l_dist[dst]);
-                };
-                
-                thrust::for_each(
-                    thrust::cuda::par.on(infos[gid].stream),
-                    thrust::make_counting_iterator<Int>(0),
-                    thrust::make_counting_iterator<Int>(n_nodes),
-                    merge_op
-                );
-                
-                cudaEventRecord(infos[gid].event, infos[gid].stream);
-            }
-            
-            for(int gid = 0; gid < n_gpus; gid++)
-                cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
-            cudaStreamSynchronize(master_stream);
-        
-        } else {
-            // Single-GPU mode
-            
-            cudaSetDevice(0);
-            
-            Int* l_cindices = all_cindices[0];
-            Int* l_rindices = all_rindices[0];
-            Real* l_data    = all_data[0];
-
             auto edge_op = [=] __device__(int const& offset) -> void {
                 Int src = l_rindices[offset];
                 Int dst = l_cindices[offset];
                 
-                if(g_frontier_in[src] != iter) return; 
+                if(l_frontier_in[src] != iter) return;
                 
-                Real new_dist = g_dist[src] + l_data[offset];
-                Real old_dist = atomicMin(g_dist + dst, new_dist);
+                Real new_dist = l_dist[src] + l_data[offset];     
+                Real old_dist = atomicMin(l_dist + dst, new_dist);
                 if(new_dist < old_dist)
-                    g_frontier_out[dst] = next_iter;
+                    l_frontier_out[dst] = next_iter;
             };
             
             thrust::for_each(
-                thrust::cuda::par.on(infos[0].stream),
-                thrust::make_counting_iterator<Int>(0),
-                thrust::make_counting_iterator<Int>(n_edges),
+                thrust::cuda::par.on(infos[gid].stream),
+                thrust::make_counting_iterator<Int>(starts[gid]),
+                thrust::make_counting_iterator<Int>(ends[gid]),
                 edge_op
             );
             
-            cudaEventRecord(infos[0].event, infos[0].stream);
-            cudaStreamWaitEvent(master_stream, infos[0].event, 0);
-            cudaStreamSynchronize(master_stream);
+            cudaEventRecord(infos[gid].event, infos[gid].stream);
         }
         
-        // Swap frontiers
-        char* tmp      = g_frontier_in;
-        g_frontier_in  = g_frontier_out;
-        g_frontier_out = tmp;
-                
+        for(int gid = 0; gid < n_gpus; gid++)
+            cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
+        cudaStreamSynchronize(master_stream);
+        
+        // Merge
+        ncclGroupStart();
+        for (int i = 0; i < n_gpus; i++) {
+            ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream);
+            ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar, ncclMax,  comms[i], infos[i].stream);
+        }
+        ncclGroupEnd();
+
+        for(int gid = 0; gid < n_gpus; gid++)
+            cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
+        cudaStreamSynchronize(master_stream);
+        
         iter++;
     }
     
-    cudaMemcpy(h_dist, g_dist, n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
+    cudaSetDevice(0);
+    cudaMemcpy(h_dist, all_dist[0], n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     
     auto elapsed = high_resolution_clock::now() - t;
@@ -344,22 +296,24 @@ int main(int n_args, char** argument_array) {
     // ---------------- DIJKSTRA ----------------
     
     Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto ms1 = sssp_cpu(dijkstra_dist, src);
+    long long ms1 = 0;
+    // ms1 = sssp_cpu(dijkstra_dist, src);
     
     // ---------------- FRONTIER ----------------
     
     Real* frontier_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    auto ms2 = sssp_mgpu(frontier_dist, src, n_gpus);
+    long long ms2 = 0;
+    ms2 = sssp_mgpu(frontier_dist, src, n_gpus);
 
-    for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
-    std::cout << std::endl;
+    // for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
+    // std::cout << std::endl;
     for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
     std::cout << std::endl;
 
     int n_errors = 0;
-    for(Int i = 0; i < n_nodes; i++) {
-        if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
-    }
+    // for(Int i = 0; i < n_nodes; i++) {
+    //     if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
+    // }
     
     std::cout << "ms1=" << ms1 << " | ms2=" << ms2 << " | n_errors=" << n_errors << std::endl;
     
