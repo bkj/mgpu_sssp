@@ -241,7 +241,7 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
     for(int i = 0 ; i < n_gpus ; i++) cudaDeviceSynchronize();
 
     auto t = high_resolution_clock::now();
-    while(iteration < 10) {
+    while(iteration <= 7) {
         
         Int iteration1 = iteration + 1;
         
@@ -251,6 +251,8 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
         nvtxRangePushA("advance");
         #pragma omp parallel for num_threads(n_gpus)
         for(int gid = 0; gid < n_gpus; gid++) {
+            if(iteration == 0 && gid != 0) continue;
+            
             cudaSetDevice(gid);
             
             Int* d_cindices     = g_cindices[gid];
@@ -283,6 +285,19 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
                 edge_op
             );
             
+            auto merge_op = [=] __device__(int const& dst) -> void {
+                if(l_frontier_out[dst] != iteration1) return; // local
+                if(d_frontier_out[dst] != iteration1) d_frontier_out[dst] = iteration1;
+                atomicMin(d_dist + dst, l_dist[dst]);
+            };
+            
+            thrust::for_each(
+                thrust::cuda::par.on(infos[gid].stream),
+                thrust::make_counting_iterator<Int>(0),
+                thrust::make_counting_iterator<Int>(n_nodes),
+                merge_op
+            );
+            
             cudaEventRecord(infos[gid].event, infos[gid].stream);
         }
         
@@ -294,37 +309,34 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
         // ------
         // MERGE
         
-        nvtxRangePushA("merge");
-        #pragma omp parallel for num_threads(n_gpus)
-        for(int gid = 0; gid < n_gpus; gid++) {
-            cudaSetDevice(gid);
+        // nvtxRangePushA("merge");
+        // #pragma omp parallel for num_threads(n_gpus)
+        // for(int gid = 0; gid < n_gpus; gid++) {
+        //     cudaSetDevice(gid);
             
-            Int* d_cindices     = g_cindices[gid];
-            Real* l_dist        = g_dist[gid];
-            Int* l_frontier_out = g_frontier_out[gid];
-                        
-            auto merge_op = [=] __device__(int const& offset) -> void {
-                Int dst = d_cindices[offset];                 // local
-                if(l_frontier_out[dst] != iteration1) return; // local
-                d_frontier_out[dst] = iteration1;
-                l_frontier_out[dst] = -1;
-                atomicMin(d_dist + dst, l_dist[dst]);
-            };
+        //     Real* l_dist        = g_dist[gid];
+        //     Int* l_frontier_out = g_frontier_out[gid];
             
-            thrust::for_each(
-                thrust::cuda::par.on(infos[gid].stream),
-                thrust::make_counting_iterator<Int>(starts[gid]),
-                thrust::make_counting_iterator<Int>(ends[gid]),
-                merge_op
-            );
+        //     auto merge_op = [=] __device__(int const& dst) -> void {
+        //         if(l_frontier_out[dst] != iteration1) return; // local
+        //         if(d_frontier_out[dst] != iteration1) d_frontier_out[dst] = iteration1;
+        //         atomicMin(d_dist + dst, l_dist[dst]);
+        //     };
             
-            cudaEventRecord(infos[gid].event, infos[gid].stream);
-        }
+        //     thrust::for_each(
+        //         thrust::cuda::par.on(infos[gid].stream),
+        //         thrust::make_counting_iterator<Int>(0),
+        //         thrust::make_counting_iterator<Int>(n_nodes),
+        //         merge_op
+        //     );
+            
+        //     cudaEventRecord(infos[gid].event, infos[gid].stream);
+        // }
         
-        for(int gid = 0; gid < n_gpus; gid++)
-            cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
-        cudaStreamSynchronize(master_stream);
-        nvtxRangePop();
+        // for(int gid = 0; gid < n_gpus; gid++)
+        //     cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
+        // cudaStreamSynchronize(master_stream);
+        // nvtxRangePop();
         
         Int* tmp       = d_frontier_in;
         d_frontier_in  = d_frontier_out;
