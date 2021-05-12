@@ -143,31 +143,31 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     // --
     // Setup problem on host
     
-    bool* frontier_in  = (bool*)malloc(n_nodes * sizeof(bool));
-    bool* frontier_out = (bool*)malloc(n_nodes * sizeof(bool));
+    Int* frontier_in  = (Int*)malloc(n_nodes * sizeof(Int));
+    Int* frontier_out = (Int*)malloc(n_nodes * sizeof(Int));
     
     for(Int i = 0; i < n_nodes; i++) dist[i]          = std::numeric_limits<Real>::max();
-    for(Int i = 0; i < n_nodes; i++) frontier_in[i]   = false;
-    for(Int i = 0; i < n_nodes; i++) frontier_out[i]  = false;
+    for(Int i = 0; i < n_nodes; i++) frontier_in[i]   = -1;
+    for(Int i = 0; i < n_nodes; i++) frontier_out[i]  = -1;
     
     dist[src]        = 0;
-    frontier_in[src] = true;
+    frontier_in[src] = 0;
     
     int iteration = 0;
     
     // --
     // Copy data to device
     
-    bool* d_frontier_in;
-    bool* d_frontier_out;
+    Int* d_frontier_in;
+    Int* d_frontier_out;
     Real* d_dist;
     
-    cudaMalloc(&d_frontier_in,  n_nodes * sizeof(bool));
-    cudaMalloc(&d_frontier_out, n_nodes * sizeof(bool));
+    cudaMalloc(&d_frontier_in,  n_nodes * sizeof(Int));
+    cudaMalloc(&d_frontier_out, n_nodes * sizeof(Int));
     cudaMalloc(&d_dist,         n_nodes * sizeof(Real));
 
-    cudaMemcpy(d_frontier_in,  frontier_in,  n_nodes * sizeof(bool), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_frontier_out, frontier_out, n_nodes * sizeof(bool), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_frontier_in,  frontier_in,  n_nodes * sizeof(Int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_frontier_out, frontier_out, n_nodes * sizeof(Int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dist,         dist,         n_nodes * sizeof(Real), cudaMemcpyHostToDevice);
 
     // --
@@ -176,19 +176,23 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
     cudaDeviceSynchronize();
     auto t = high_resolution_clock::now();
     
-    while(true) {
+    // while(true) {
+    while(iteration <= 7) {
+        printf("iteration %d\n", iteration);
+        
+        Int iteration1 = iteration + 1;
         
         // Advance        
         auto edge_op = [=] __device__(int const& offset) -> void {
             Int src = d_rindices[offset];
-            if(!d_frontier_in[src]) return;
+            if(d_frontier_in[src] != iteration) return;
             
             Int dst = d_cindices[offset];
             
             Real new_dist = d_dist[src] + d_data[offset];
             Real old_dist = atomicMin(d_dist + dst, new_dist);
             if(new_dist < old_dist)
-                d_frontier_out[dst] = true;
+                d_frontier_out[dst] = iteration1;
         };
         
         thrust::for_each(
@@ -199,22 +203,23 @@ long long cuda_sssp(Real* dist, Int src, Int n_threads) {
         );
 
         // Swap input and output
-        bool* tmp      = d_frontier_in;
+        Int* tmp       = d_frontier_in;
         d_frontier_in  = d_frontier_out;
         d_frontier_out = tmp;
                 
-        // Convergence criterion
-        auto keep_going = thrust::reduce(
-            thrust::device, d_frontier_in + 0, d_frontier_in + n_nodes
-        );
-        if(keep_going == 0) break; 
+        // // Convergence criterion
+        // auto keep_going = thrust::reduce(
+        //     thrust::device, d_frontier_in + 0, d_frontier_in + n_nodes
+        // );
+        // if(keep_going == 0) break; 
 
         // Reset output frontier
-        thrust::fill_n(thrust::device, 
-            d_frontier_out, n_nodes, false
-        );
+        // thrust::fill_n(thrust::device, 
+        //     d_frontier_out, n_nodes, false
+        // );
         
         iteration++;
+        
     }
     
     cudaMemcpy(dist, d_dist, n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
