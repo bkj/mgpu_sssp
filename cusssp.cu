@@ -155,9 +155,15 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
     
     cudaSetDevice(0);
 
+    // Setup NCCL
+    ncclComm_t comms[n_gpus];
+    int devs[n_gpus];
+    for(int i = 0; i < n_gpus; i++) devs[i] = i;
+    ncclCommInitAll(comms, n_gpus, devs);
+
     // --
     // Setup chunks
-    
+        
     Int* starts    = (Int*)malloc(n_gpus * sizeof(Int));
     Int* ends      = (Int*)malloc(n_gpus * sizeof(Int));
     Int chunk_size = (n_edges + n_gpus - 1) / n_gpus;
@@ -195,14 +201,10 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
     scatter(all_frontier_out, h_frontier_out, n_nodes, n_gpus);
     scatter(all_dist,         h_dist,         n_nodes, n_gpus);
 
-    int iter = 0;
-    
-    ncclComm_t comms[n_gpus];
-    int devs[n_gpus];
-    for(int i = 0; i < n_gpus; i++) devs[i] = i;
-    ncclCommInitAll(comms, n_gpus, devs);
-    
     auto t = high_resolution_clock::now();
+    
+    int iter = 0;
+        
     while(iter <= 7) { // hardcode number of iterations -- skipping convergence criterionfor now
         
         Int next_iter = iter + 1;
