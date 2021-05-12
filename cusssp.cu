@@ -241,7 +241,7 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
     for(int i = 0 ; i < n_gpus ; i++) cudaDeviceSynchronize();
 
     auto t = high_resolution_clock::now();
-    while(iteration < 5) {
+    while(iteration < 10) {
         
         Int iteration1 = iteration + 1;
         
@@ -260,8 +260,8 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
             Int* l_frontier_out = g_frontier_out[gid];
             Real* l_dist        = g_dist[gid];
             
-            cudaMemcpyAsync(l_frontier_in,  d_frontier_in,  n_nodes * sizeof(Int), cudaMemcpyDeviceToDevice, infos[gid].stream);
-            cudaMemcpyAsync(l_frontier_out, d_frontier_out, n_nodes * sizeof(Int), cudaMemcpyDeviceToDevice, infos[gid].stream);
+            cudaMemcpyAsync(l_frontier_in,  d_frontier_in,  n_nodes * sizeof(Int),  cudaMemcpyDeviceToDevice, infos[gid].stream);
+            cudaMemcpyAsync(l_frontier_out, d_frontier_out, n_nodes * sizeof(Int),  cudaMemcpyDeviceToDevice, infos[gid].stream);
             cudaMemcpyAsync(l_dist,         d_dist,         n_nodes * sizeof(Real), cudaMemcpyDeviceToDevice, infos[gid].stream);
                         
             auto edge_op = [=] __device__(int const& offset) -> void {
@@ -307,7 +307,7 @@ long long frontier_sssp(Real* dist, Int src, Int n_gpus) {
                 Int dst = d_cindices[offset];                 // local
                 if(l_frontier_out[dst] != iteration1) return; // local
                 d_frontier_out[dst] = iteration1;
-                l_frontier_out[dst] = 0;
+                l_frontier_out[dst] = -1;
                 atomicMin(d_dist + dst, l_dist[dst]);
             };
             
