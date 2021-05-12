@@ -2,7 +2,7 @@
 
 # run.sh
 
-PROB=rmat24.bin
+PROB=rmat22.bin
 
 # --
 # Build
