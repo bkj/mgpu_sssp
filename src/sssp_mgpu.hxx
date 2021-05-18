@@ -84,6 +84,7 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
     
     char* h_frontier_in  = (char*)malloc(n_nodes * sizeof(char));
     char* h_frontier_out = (char*)malloc(n_nodes * sizeof(char));
+    char* h_keep_going   = (char*)malloc(1       * sizeof(char));
     
     for(Int i = 0; i < n_nodes; i++) h_dist[i]          = std::numeric_limits<Real>::max();
     for(Int i = 0; i < n_nodes; i++) h_frontier_in[i]   = -1;
@@ -91,6 +92,7 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
     
     h_dist[src]         = 0;
     h_frontier_in[src]  = 0;
+    h_keep_going[0]     = true;
         
     // Local data, frontier + dist
     Int* all_cindices[n_gpus];
@@ -98,6 +100,7 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
     Real* all_data[n_gpus];
     char* all_frontier_in[n_gpus];
     char* all_frontier_out[n_gpus];
+    char* all_keep_going[n_gpus];
     Real* all_dist[n_gpus];
 
     scatter(all_cindices,     cindices,       n_edges, n_gpus);
@@ -105,18 +108,17 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
     scatter(all_data,         data,           n_edges, n_gpus);
     scatter(all_frontier_in,  h_frontier_in,  n_nodes, n_gpus);
     scatter(all_frontier_out, h_frontier_out, n_nodes, n_gpus);
+    scatter(all_keep_going,   h_keep_going,   n_nodes, n_gpus);
     scatter(all_dist,         h_dist,         n_nodes, n_gpus);
 
     cuda_timer_t timer;
     timer.start();
     
-    int iter = 0;
-        
-    while(iter <= 7) { // hardcode number of iters -- skipping convergence criterion for now
-        printf("iter %d\n", iter);
-        
-        Int next_iter = iter + 1;
-        
+    char iter       = 0;
+    char keep_going = 0;
+    while(true) {
+        char next_iter = iter + 1;
+                
         // Advance
         #pragma omp parallel for num_threads(n_gpus)
         for(int gid = 0; gid < n_gpus; gid++) {
@@ -128,14 +130,16 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
             Real* l_data         = all_data[gid];
             char* l_frontier_in  = all_frontier_in[gid];
             char* l_frontier_out = all_frontier_out[gid];
+            char* l_keep_going   = all_keep_going[gid];
             Real* l_dist         = all_dist[gid];
-            
+
             // Advance
             auto edge_op = [=] __device__(int const& offset) -> void {
                 Int src = l_rindices[offset];
                 Int dst = l_cindices[offset];
                 
                 if(l_frontier_in[src] != iter) return;
+                l_keep_going[0] = next_iter;
                 
                 Real new_dist = l_dist[src] + l_data[offset];     
                 Real old_dist = atomicMin(l_dist + dst, new_dist);
@@ -160,8 +164,9 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
         // Merge
         ncclGroupStart();
         for (int i = 0; i < n_gpus; i++) {
-            ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream); // min-reduce distance
-            ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar, ncclMax,  comms[i], infos[i].stream); // swap frontiers
+            ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream);    // min-reduce distance
+            ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar,  ncclMax,  comms[i], infos[i].stream);   // swap frontiers
+            ncclReduce((const void*)all_keep_going[i],      (void*)all_keep_going[i],  n_nodes, ncclChar,  ncclMax, 0, comms[i], infos[i].stream); // check convergence criteria
         }
         ncclGroupEnd();
 
@@ -169,6 +174,10 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
             cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
         cudaStreamSynchronize(master_stream);
         
+        cudaSetDevice(0);
+        cudaMemcpy(&keep_going, all_keep_going[0], 1 * sizeof(char), cudaMemcpyDeviceToHost);
+        if(keep_going != next_iter) break;
+
         iter++;
     }
     
