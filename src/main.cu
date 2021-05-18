@@ -4,6 +4,8 @@
 #include "sssp_1gpu.hxx"
 #include "sssp_mgpu.hxx"
 
+#define RUN_CPU
+
 // --
 // Global defs
 
@@ -56,7 +58,9 @@ int main(int n_args, char** argument_array) {
     
     Real* cpu_dist = (Real*)malloc(n_nodes * sizeof(Real));
     long long cpu_time = 0;
+#ifdef RUN_CPU
     cpu_time = sssp_cpu(cpu_dist, src, n_nodes, n_edges, indptr, cindices, data);
+#endif
     
     // ---------------- GPU ----------------
     
@@ -76,9 +80,11 @@ int main(int n_args, char** argument_array) {
     // ---------------- VALIDATE ----------------
     
     int n_errors = 0;
+#ifdef RUN_CPU
     for(Int i = 0; i < n_nodes; i++) {
         if(cpu_dist[i] != gpu_dist[i]) n_errors++;
     }
+#endif
     
     std::cout << "cpu_time=" << cpu_time << " | gpu_time=" << gpu_time << " | n_errors=" << n_errors << std::endl;
     

@@ -1,5 +1,9 @@
 // sssp_mgpu.hxx
 
+// Notes:
+// - Checking for convergence after iteration slows us down.  Could do better by checking every
+//   N iterations.  Or possibly there's a better way to check if the output frontier is empty.
+
 #pragma once
 #pragma GCC diagnostic ignored "-Wunused-result"
 
@@ -108,7 +112,7 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
     scatter(all_data,         data,           n_edges, n_gpus);
     scatter(all_frontier_in,  h_frontier_in,  n_nodes, n_gpus);
     scatter(all_frontier_out, h_frontier_out, n_nodes, n_gpus);
-    scatter(all_keep_going,   h_keep_going,   n_nodes, n_gpus);
+    scatter(all_keep_going,   h_keep_going,   1,       n_gpus);
     scatter(all_dist,         h_dist,         n_nodes, n_gpus);
 
     cuda_timer_t timer;
@@ -166,7 +170,7 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
         for (int i = 0; i < n_gpus; i++) {
             ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream);    // min-reduce distance
             ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar,  ncclMax,  comms[i], infos[i].stream);   // swap frontiers
-            ncclReduce((const void*)all_keep_going[i],      (void*)all_keep_going[i],  n_nodes, ncclChar,  ncclMax, 0, comms[i], infos[i].stream); // check convergence criteria
+            ncclReduce((const void*)all_keep_going[i],      (void*)all_keep_going[i],  n_gpus, ncclChar,  ncclMax, 0, comms[i], infos[i].stream); // check convergence criteria
         }
         ncclGroupEnd();
 
