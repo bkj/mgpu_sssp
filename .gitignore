@@ -1,4 +1,5 @@
 nccl/*
 main
+*.csr
 *.bin
 *.mtx
