@@ -53,3 +53,5 @@ SCALE=18
 fetch_rmat $SCALE
 python prob2bin.py --inpath data/rmat18.mtx
 ./main data/rmat18.bin
+
+# See `./run.sh` for more invocations

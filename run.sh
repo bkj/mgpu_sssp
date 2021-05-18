@@ -3,7 +3,7 @@
 # run.sh
 
 PROB=rmat20.bin
-N_SEEDS=10
+N_SEEDS=1
 
 # --
 # Build
