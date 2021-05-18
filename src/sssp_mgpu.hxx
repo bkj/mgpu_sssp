@@ -1,42 +1,12 @@
+// sssp_mgpu.hxx
+
+#pragma once
 #pragma GCC diagnostic ignored "-Wunused-result"
 
-#include "thrust/device_vector.h"
 #include "nccl.h"
+#include "thrust/device_vector.h"
 
-#include <chrono>
-#include <queue>
-#include <vector>
-
-using namespace std;
-using namespace std::chrono;
-
-// --
-// Global defs
-
-typedef int Int;
-typedef float Real;
-
-// graph
-Int n_nodes;
-Int n_edges;
-Int* indptr;
-Int* rindices;
-Int* cindices;
-Real* data;
-
-// ----------------------------------------------------------------------
-// Helpers
-
-__device__ static float atomicMin(float* address, float value) {
-  int* addr_as_int = reinterpret_cast<int*>(address);
-  int old = *addr_as_int;
-  int expected;
-  do {
-    expected = old;
-    old = atomicCAS(addr_as_int, expected, __float_as_int(::fminf(value, __int_as_float(expected))));
-  } while (expected != old);
-  return __int_as_float(old);
-}
+#include "helpers.hxx"
 
 template <typename type_t>
 void scatter(type_t** out, type_t* h_x, int n, int n_gpus) {
@@ -54,74 +24,10 @@ void scatter(type_t** out, type_t* h_x, int n, int n_gpus) {
     cudaSetDevice(0);
 }
 
-void load_data(std::string inpath) {
-    FILE *ptr;
-    ptr = fopen(inpath.c_str(), "rb");
-
-    fread(&n_nodes,   sizeof(Int), 1, ptr);
-    fread(&n_nodes,   sizeof(Int), 1, ptr);
-    fread(&n_edges,    sizeof(Int), 1, ptr);
-
-    indptr   = (Int*)  malloc(sizeof(Int)  * (n_nodes + 1)  );
-    cindices = (Int*)  malloc(sizeof(Int)  * n_edges         );
-    rindices = (Int*)  malloc(sizeof(Int)  * n_edges         );
-    data     = (Real*) malloc(sizeof(Real) * n_edges         );
-
-    fread(indptr,  sizeof(Int),   n_nodes + 1 , ptr);  // send directy to the memory since thats what the thing is.
-    fread(cindices, sizeof(Int),  n_edges      , ptr);
-    fread(data,    sizeof(Real),  n_edges      , ptr);
+template <typename Int, typename Real>
+long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindices, Int* cindices, Real* data, Int n_gpus) {
+    std::cout << "sssp_mgpu" << std::endl;
     
-    for(Int src = 0; src < n_nodes; src++) {
-        for(Int offset = indptr[src]; offset < indptr[src + 1]; offset++) {
-            rindices[offset] = src;
-        }
-    }
-}
-
-// ----------------------------------------------------------------------
-// CPU implementation
-
-class prioritize {
-    public:
-        bool operator()(pair<Int, Real> &p1, pair<Int, Real> &p2) {
-            return p1.second > p2.second;
-        }
-};
-
-long long sssp_cpu(Real* dist, Int src) {
-    for(Int i = 0; i < n_nodes; i++) dist[i] = std::numeric_limits<Real>::max();
-    dist[src] = 0;
-
-    auto t = high_resolution_clock::now();
-    priority_queue<pair<Int,Real>, vector<pair<Int,Real>>, prioritize> pq;
-    pq.push(make_pair(src, 0));
-    
-    while(!pq.empty()) {
-        pair<Int, Real> curr = pq.top();
-        pq.pop();
-
-        Int curr_node  = curr.first;
-        Real curr_dist = curr.second;
-        if(curr_dist == dist[curr_node]) {
-            for(Int offset = indptr[curr_node]; offset < indptr[curr_node + 1]; offset++) {
-                Int neib      = cindices[offset];
-                Real new_dist = curr_dist + data[offset];
-                if(new_dist < dist[neib]) {
-                    dist[neib] = new_dist;
-                    pq.push(make_pair(neib, new_dist));
-                }
-            }
-        }
-    }
-    auto elapsed = high_resolution_clock::now() - t;
-    return duration_cast<microseconds>(elapsed).count();
-}
-
-// ----------------------------------------------------------------------
-// GPU implementation
-
-long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {    
-
     // --
     // Setup devices
     
@@ -201,11 +107,13 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
     scatter(all_frontier_out, h_frontier_out, n_nodes, n_gpus);
     scatter(all_dist,         h_dist,         n_nodes, n_gpus);
 
-    auto t = high_resolution_clock::now();
+    cuda_timer_t timer;
+    timer.start();
     
     int iter = 0;
         
-    while(iter <= 7) { // hardcode number of iterations -- skipping convergence criterionfor now
+    while(iter <= 7) { // hardcode number of iters -- skipping convergence criterion for now
+        printf("iter %d\n", iter);
         
         Int next_iter = iter + 1;
         
@@ -278,43 +186,5 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_gpus) {
     cudaMemcpy(h_dist, all_dist[0], n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     
-    auto elapsed = high_resolution_clock::now() - t;
-    return duration_cast<microseconds>(elapsed).count();
-}
-
-
-int main(int n_args, char** argument_array) {
-    int n_gpus = 1;
-    cudaGetDeviceCount(&n_gpus);
-    
-    // ---------------- INPUT ----------------
-
-    load_data(argument_array[1]);
-
-    int src = 0;
-    // ---------------- DIJKSTRA ----------------
-    
-    Real* dijkstra_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    long long ms1 = 0;
-    ms1 = sssp_cpu(dijkstra_dist, src);
-    
-    // ---------------- FRONTIER ----------------
-    
-    Real* frontier_dist = (Real*)malloc(n_nodes * sizeof(Real));
-    long long ms2 = 0;
-    ms2 = sssp_mgpu(frontier_dist, src, n_gpus);
-
-    for(Int i = 0; i < 40; i++) std::cout << dijkstra_dist[i] << " ";
-    std::cout << std::endl;
-    for(Int i = 0; i < 40; i++) std::cout << frontier_dist[i] << " ";
-    std::cout << std::endl;
-
-    int n_errors = 0;
-    for(Int i = 0; i < n_nodes; i++) {
-        if(dijkstra_dist[i] != frontier_dist[i]) n_errors++;
-    }
-    
-    std::cout << "ms1=" << ms1 << " | ms2=" << ms2 << " | n_errors=" << n_errors << std::endl;
-    
-    return 0;
+    return timer.stop();
 }

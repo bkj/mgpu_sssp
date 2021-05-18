@@ -13,5 +13,5 @@ NVCCFLAGS   += -O3 --generate-line-info
 
 CXXFLAGS    += -std=c++14 
 CXXFLAGS    += -fopenmp
-CXXFLAGS    += -Wall -Wno-unused-local-typedefs -Wno-strict-aliasing -Wno-unused-function -Wno-format-security
+CXXFLAGS    += -Wall -Wno-unused-result -Wno-unused-local-typedefs -Wno-strict-aliasing -Wno-unused-function -Wno-format-security
 CXXFLAGS    += -O3

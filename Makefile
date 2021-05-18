@@ -1,15 +1,9 @@
 include Makefile.inc
 
-all: sssp cusssp test
+all: main
 
-sssp: sssp.cpp
-	g++ $(CXXFLAGS) -o sssp sssp.cpp
-
-cusssp : cusssp.cu
-	$(NVCC) -ccbin=${CXX} ${NVCCFLAGS} -Inccl/build/include -Lnccl/build/lib -lnccl --compiler-options "${CXXFLAGS}" -o cusssp cusssp.cu
-
-test : test.cu
-	$(NVCC) -ccbin=${CXX} ${NVCCFLAGS} -Inccl/build/include -Lnccl/build/lib -lnccl --compiler-options "${CXXFLAGS}" -o test test.cu
+main : src/main.cu src/sssp_cpu.hxx src/sssp_1gpu.hxx src/sssp_mgpu.hxx
+	$(NVCC) -ccbin=${CXX} ${NVCCFLAGS} -Inccl/build/include -Lnccl/build/lib -lnccl --compiler-options "${CXXFLAGS}" -o main src/main.cu
 
 clean:
-	rm -f sssp cusssp test
+	rm -f main
