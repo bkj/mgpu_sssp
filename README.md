@@ -1,5 +1,11 @@
 # sssp
 
+## Installation and Usage
+
+See `./install.sh` for installation and usage.
+
+## Misc. Results
+
 ## MGPU results (EC2 V100)
 
 | dataset | n_gpu | time (ms) |

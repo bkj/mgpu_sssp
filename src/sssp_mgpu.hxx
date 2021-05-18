@@ -30,8 +30,6 @@ void scatter(type_t** out, type_t* h_x, int n, int n_gpus) {
 
 template <typename Int, typename Real>
 long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_edges, Int* rindices, Int* cindices, Real* data, Int n_gpus) {
-    std::cout << "sssp_mgpu" << std::endl;
-    
     // --
     // Setup devices
     
