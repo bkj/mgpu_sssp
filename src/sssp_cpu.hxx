@@ -17,13 +17,16 @@ class prioritize {
 };
 
 template <typename Int, typename Real>
-long long sssp_cpu(Real* dist, Int src, Int n_nodes, Int n_edges, Int* indptr, Int* cindices, Real* data) {
+long long sssp_cpu(Real* dist, Int n_srcs, Int* srcs, Int n_nodes, Int n_edges, Int* indptr, Int* cindices, Real* data) {
     for(Int i = 0; i < n_nodes; i++) dist[i] = std::numeric_limits<Real>::max();
-    dist[src] = 0;
-
+    
     auto t = high_resolution_clock::now();
     priority_queue<pair<Int,Real>, vector<pair<Int,Real>>, prioritize<Int, Real>> pq;
-    pq.push(make_pair(src, 0));
+    
+    for(Int src = 0; src < n_srcs; src++) {
+        pq.push(make_pair(src, 0));
+        dist[src] = 0;
+    }
     
     while(!pq.empty()) {
         pair<Int, Real> curr = pq.top();

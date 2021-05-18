@@ -29,7 +29,7 @@ void scatter(type_t** out, type_t* h_x, int n, int n_gpus) {
 }
 
 template <typename Int, typename Real>
-long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindices, Int* cindices, Real* data, Int n_gpus) {
+long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_edges, Int* rindices, Int* cindices, Real* data, Int n_gpus) {
     std::cout << "sssp_mgpu" << std::endl;
     
     // --
@@ -94,9 +94,12 @@ long long sssp_mgpu(Real* h_dist, Int src, Int n_nodes, Int n_edges, Int* rindic
     for(Int i = 0; i < n_nodes; i++) h_frontier_in[i]   = -1;
     for(Int i = 0; i < n_nodes; i++) h_frontier_out[i]  = -1;
     
-    h_dist[src]         = 0;
-    h_frontier_in[src]  = 0;
-    h_keep_going[0]     = true;
+    for(Int seed = 0; seed < n_seeds; seed++) {
+        h_dist[seed]         = 0;
+        h_frontier_in[seed]  = 0;
+    }
+    
+    h_keep_going[0] = true;
         
     // Local data, frontier + dist
     Int* all_cindices[n_gpus];

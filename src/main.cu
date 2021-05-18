@@ -26,7 +26,7 @@ void load_data(std::string inpath) {
 
     fread(&n_nodes,   sizeof(Int), 1, ptr);
     fread(&n_nodes,   sizeof(Int), 1, ptr);
-    fread(&n_edges,    sizeof(Int), 1, ptr);
+    fread(&n_edges,   sizeof(Int), 1, ptr);
 
     indptr   = (Int*)  malloc(sizeof(Int)  * (n_nodes + 1)  );
     cindices = (Int*)  malloc(sizeof(Int)  * n_edges         );
@@ -51,15 +51,22 @@ int main(int n_args, char** argument_array) {
     // ---------------- INPUT ----------------
 
     load_data(argument_array[1]);
+    int n_seeds = 1;
+    if(n_args > 2) {
+        n_seeds = (int)atoi(argument_array[2]);
+    }
 
-    int src = 0;
+    Int* seeds = (Int*)malloc(n_seeds * sizeof(Int));
+    for(Int seed = 0; seed < n_seeds; seed++) {
+        seeds[seed] = seed;
+    }
     
     // ---------------- CPU ----------------
     
     Real* cpu_dist = (Real*)malloc(n_nodes * sizeof(Real));
     long long cpu_time = 0;
 #ifdef RUN_CPU
-    cpu_time = sssp_cpu(cpu_dist, src, n_nodes, n_edges, indptr, cindices, data);
+    cpu_time = sssp_cpu(cpu_dist, n_seeds, seeds, n_nodes, n_edges, indptr, cindices, data);
 #endif
     
     // ---------------- GPU ----------------
@@ -67,9 +74,9 @@ int main(int n_args, char** argument_array) {
     Real* gpu_dist = (Real*)malloc(n_nodes * sizeof(Real));
     long long gpu_time = 0;
     if(n_gpus == 1) {
-        gpu_time = sssp_1gpu(gpu_dist, src, n_nodes, n_edges, rindices, cindices, data);
+        gpu_time = sssp_1gpu(gpu_dist, n_seeds, seeds, n_nodes, n_edges, rindices, cindices, data);
     } else {
-        gpu_time = sssp_mgpu(gpu_dist, src, n_nodes, n_edges, rindices, cindices, data, n_gpus);
+        gpu_time = sssp_mgpu(gpu_dist, n_seeds, seeds, n_nodes, n_edges, rindices, cindices, data, n_gpus);
     }
 
     for(Int i = 0; i < min(n_nodes, 40); i++) std::cout << cpu_dist[i] << " ";
@@ -86,7 +93,7 @@ int main(int n_args, char** argument_array) {
     }
 #endif
     
-    std::cout << "cpu_time=" << cpu_time << " | gpu_time=" << gpu_time << " | n_errors=" << n_errors << std::endl;
+    std::cout << "n_seeds=" << n_seeds << " | cpu_time=" << cpu_time << " | gpu_time=" << gpu_time << " | n_errors=" << n_errors << std::endl;
     
     return 0;
 }

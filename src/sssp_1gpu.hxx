@@ -7,7 +7,7 @@
 #include "helpers.hxx"
 
 template <typename Int, typename Real>
-long long sssp_1gpu(Real* dist, Int src, Int n_nodes, Int n_edges, Int* rindices, Int* cindices, Real* data) {
+long long sssp_1gpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_edges, Int* rindices, Int* cindices, Real* data) {
     
     // --
     // Copy graph from host to device
@@ -27,15 +27,17 @@ long long sssp_1gpu(Real* dist, Int src, Int n_nodes, Int n_edges, Int* rindices
     // --
     // Setup problem on host
     
-    char* frontier_in  = (char*)malloc(n_nodes * sizeof(char));
-    char* frontier_out = (char*)malloc(n_nodes * sizeof(char));
+    char* h_frontier_in  = (char*)malloc(n_nodes * sizeof(char));
+    char* h_frontier_out = (char*)malloc(n_nodes * sizeof(char));
     
-    for(Int i = 0; i < n_nodes; i++) dist[i]          = std::numeric_limits<Real>::max();
-    for(Int i = 0; i < n_nodes; i++) frontier_in[i]   = -1;
-    for(Int i = 0; i < n_nodes; i++) frontier_out[i]  = -1;
+    for(Int i = 0; i < n_nodes; i++) h_dist[i]          = std::numeric_limits<Real>::max();
+    for(Int i = 0; i < n_nodes; i++) h_frontier_in[i]   = -1;
+    for(Int i = 0; i < n_nodes; i++) h_frontier_out[i]  = -1;
     
-    dist[src]        = 0;
-    frontier_in[src] = 0;
+    for(Int seed = 0; seed < n_seeds; seed++) {
+        h_dist[seed]         = 0;
+        h_frontier_in[seed]  = 0;
+    }
     
     // --
     // Copy data to device
@@ -50,10 +52,10 @@ long long sssp_1gpu(Real* dist, Int src, Int n_nodes, Int n_edges, Int* rindices
     cudaMalloc(&d_keep_going,   1       * sizeof(char));
     cudaMalloc(&d_dist,         n_nodes * sizeof(Real));
     
-    cudaMemcpy(d_frontier_in,  frontier_in,  n_nodes * sizeof(char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_frontier_out, frontier_out, n_nodes * sizeof(char), cudaMemcpyHostToDevice);
-    cudaMemset(d_keep_going,   0,            1       * sizeof(char));
-    cudaMemcpy(d_dist,         dist,         n_nodes * sizeof(Real), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_frontier_in,  h_frontier_in,  n_nodes * sizeof(char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_frontier_out, h_frontier_out, n_nodes * sizeof(char), cudaMemcpyHostToDevice);
+    cudaMemset(d_keep_going,   0,              1       * sizeof(char));
+    cudaMemcpy(d_dist,         h_dist,         n_nodes * sizeof(Real), cudaMemcpyHostToDevice);
     
     // --
     // Run
@@ -100,7 +102,7 @@ long long sssp_1gpu(Real* dist, Int src, Int n_nodes, Int n_edges, Int* rindices
         iter++;
     }
     
-    cudaMemcpy(dist, d_dist, n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_dist, d_dist, n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     
     return timer.stop();
