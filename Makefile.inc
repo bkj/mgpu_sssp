@@ -16,7 +16,7 @@ NVCCFLAGS   += -std=c++14 -lnvToolsExt
 NVCCFLAGS   += $(SM_TARGETS)
 NVCCFLAGS   += --expt-extended-lambda --expt-relaxed-constexpr --use_fast_math --ptxas-options -v --relocatable-device-code true
 
-CXXFLAGS    += -std=c++14 -fopenmp
+CXXFLAGS    += -std=c++14 -fopenmp -O3 -mtune=native -march=native -ffast-math
 CXXFLAGS    += -Wall
 CXXFLAGS    += -Wno-unused-local-typedefs -Wno-strict-aliasing -Wno-unused-function -Wno-format-security
 # CXXFLAGS += -std=c++11 -mtune=native -march=native -Wall -Wunused-result -O3 -DNDEBUG -g -fopenmp -ffast-math
