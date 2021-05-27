@@ -172,6 +172,7 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
             ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream);    // min-reduce distance
             ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar,  ncclMax,  comms[i], infos[i].stream);   // swap frontiers
             ncclReduce((const void*)all_keep_going[i],      (void*)all_keep_going[i],  n_gpus, ncclChar,  ncclMax, 0, comms[i], infos[i].stream); // check convergence criteria
+            cudaEventRecord(infos[i].event, infos[i].stream);
         }
         ncclGroupEnd();
 
@@ -188,8 +189,10 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
     
     // Merge
     ncclGroupStart();
-    for (int i = 0; i < n_gpus; i++)
+    for (int i = 0; i < n_gpus; i++) {
         ncclReduce((const void*)all_dist[i], (void*)all_dist[i], n_nodes, ncclFloat, ncclMin, 0, comms[i], infos[i].stream);
+        cudaEventRecord(infos[i].event, infos[i].stream);
+    }
     ncclGroupEnd();
 
     for(int gid = 0; gid < n_gpus; gid++)
