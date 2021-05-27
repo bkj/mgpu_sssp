@@ -80,6 +80,9 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
         ends[i]   = (i + 1) * chunk_size;
     }
     ends[n_gpus - 1] = n_edges;
+    
+    for(Int i = 0; i < n_gpus; i++)
+        printf("i = %d | starts = %d | ends = %d\n", i, starts[i], ends[i]);
 
     // --
     // Setup frontiers
@@ -116,16 +119,24 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
     scatter(all_keep_going,   h_keep_going,   1,       n_gpus);
     scatter(all_dist,         h_dist,         n_nodes, n_gpus);
 
+    for(int i = 0; i < n_gpus; i++) {
+        cudaSetDevice(i);
+        cudaDeviceSynchronize();
+    }
+    cudaSetDevice(0);
+    
     cuda_timer_t timer;
     timer.start();
     
     char iter       = 0;
     char keep_going = 0;
     while(true) {
+        printf("iter = %d\n", iter);
+        
         char next_iter = iter + 1;
                 
         // Advance
-        #pragma omp parallel for num_threads(n_gpus)
+        // #pragma omp parallel for num_threads(n_gpus)
         for(int gid = 0; gid < n_gpus; gid++) {
             
             cudaSetDevice(gid);
@@ -148,8 +159,10 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
                 
                 Real new_dist = l_dist[src] + l_data[offset];     
                 Real old_dist = atomicMin(l_dist + dst, new_dist);
-                if(new_dist < old_dist)
+                if(new_dist < old_dist) {
+                    printf("gid = %d | %d -> %d\n", gid, src, dst);
                     l_frontier_out[dst] = next_iter;
+                }
             };
             
             thrust::for_each(
@@ -172,6 +185,7 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
             ncclAllReduce((const void*)all_dist[i],         (void*)all_dist[i],        n_nodes, ncclFloat, ncclMin, comms[i], infos[i].stream);    // min-reduce distance
             ncclAllReduce((const void*)all_frontier_out[i], (void*)all_frontier_in[i], n_nodes, ncclChar,  ncclMax,  comms[i], infos[i].stream);   // swap frontiers
             ncclReduce((const void*)all_keep_going[i],      (void*)all_keep_going[i],  n_gpus, ncclChar,  ncclMax, 0, comms[i], infos[i].stream); // check convergence criteria
+            cudaEventRecord(infos[i].event, infos[i].stream);
         }
         ncclGroupEnd();
 
@@ -186,6 +200,7 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
         
         cudaSetDevice(0);
         cudaMemcpy(&keep_going, all_keep_going[0], 1 * sizeof(char), cudaMemcpyDeviceToHost);
+        printf("keep_going = %d | next_iter = %d\n", keep_going, next_iter);
         if(keep_going != next_iter) break;
 
         iter++;
@@ -193,8 +208,10 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
     
     // Merge
     ncclGroupStart();
-    for (int i = 0; i < n_gpus; i++)
+    for (int i = 0; i < n_gpus; i++) {
         ncclReduce((const void*)all_dist[i], (void*)all_dist[i], n_nodes, ncclFloat, ncclMin, 0, comms[i], infos[i].stream);
+        cudaEventRecord(infos[i].event, infos[i].stream);
+    }
     ncclGroupEnd();
 
     for(int gid = 0; gid < n_gpus; gid++)

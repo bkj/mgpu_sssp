@@ -47,6 +47,7 @@ void load_data(std::string inpath) {
 int main(int n_args, char** argument_array) {
     int n_gpus = 1;
     cudaGetDeviceCount(&n_gpus);
+    printf("n_gpus=%d\n", n_gpus);
     
     // ---------------- INPUT ----------------
 
