@@ -35,8 +35,8 @@ long long sssp_1gpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
     for(Int i = 0; i < n_nodes; i++) h_frontier_out[i]  = -1;
     
     for(Int seed = 0; seed < n_seeds; seed++) {
-        h_dist[seed]         = 0;
-        h_frontier_in[seed]  = 0;
+        h_dist[seeds[seed]]         = 0;
+        h_frontier_in[seeds[seed]]  = 0;
     }
     
     // --
