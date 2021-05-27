@@ -179,6 +179,11 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
             cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
         cudaStreamSynchronize(master_stream);
         
+        for(int i = 0; i < n_gpus; i++) {
+            cudaSetDevice(i);
+            cudaDeviceSynchronize();
+        }
+        
         cudaSetDevice(0);
         cudaMemcpy(&keep_going, all_keep_going[0], 1 * sizeof(char), cudaMemcpyDeviceToHost);
         if(keep_going != next_iter) break;
@@ -195,7 +200,12 @@ long long sssp_mgpu(Real* h_dist, Int n_seeds, Int* seeds, Int n_nodes, Int n_ed
     for(int gid = 0; gid < n_gpus; gid++)
         cudaStreamWaitEvent(master_stream, infos[gid].event, 0);
     cudaStreamSynchronize(master_stream);
-    
+
+    for(int i = 0; i < n_gpus; i++) {
+        cudaSetDevice(i);
+        cudaDeviceSynchronize();
+    }
+        
     cudaSetDevice(0);
     cudaMemcpy(h_dist, all_dist[0], n_nodes * sizeof(Real), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
